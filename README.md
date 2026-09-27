@@ -18,9 +18,10 @@
 
 ---
 
-> **本项目是 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) 的增强分支**（fork）。
-> 在上游基础上重构了可视化运维层，并同步了上游全部功能更新。
-> 差异概览见 [与上游的差异](#-与上游的差异)；上游设计的精巧之处（账号池调度、错误分类、提示词体系）原样保留，详见下文与上游 README。
+> **本仓库是 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 的二开版本**，
+> 后者是 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) 的增强分支（Web 管理面板 + 积分任务体系）。
+> 本仓库的二开增量集中在**面板前端改造**与**若干缺陷修复**（新增「调用记录」视图、用量视图与趋势图重写、界面细节调整），
+> 清单见 [本仓库的二开改动](#-本仓库的二开改动)；账号池调度、错误分类、提示词体系等内核逻辑保持增强分支原样。
 
 ## 项目简介
 
@@ -124,9 +125,9 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 
 成长中心连登档位（连续登录 7/14/28 天）兑换后发放积分 / 能量 / 补签卡 / **抽奖次数**，抽奖次数只能从兑换获得。网关把它挂在每日签到排程末尾自动跑闭环（见[定时任务](#定时任务)）：档位解锁当天自动兑换、有抽奖次数自动抽完，全程无需人工盯。
 
-## 🆚 与上游的差异
+## 🆚 与上游的差异（继承自增强分支）
 
-本分支相对 [上游 master](https://github.com/Sliverkiss/workbuddy2api) 的增量（均已在真实多账号环境验证）：
+本节记录的是本仓库所基于的增强分支 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 相对 [原始项目 master](https://github.com/Sliverkiss/workbuddy2api) 的增量（均已在真实多账号环境验证）——这些能力本仓库**继承并保留**；本仓库自己在其之上做的二次开发见 [本仓库的二开改动](#-本仓库的二开改动)。
 
 ### 新增
 
@@ -169,6 +170,34 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | ⚠️ 不支持 | **剩余 1 个任务** | `Expert_Philanthropy`（需真实捐款：服务端领奖时校验捐赠回执，已实测无法绕过）；面板展示指引 |
 | ❌ 未做 | **面板侧 Upstash / 凭证目录配置** | 涉及启动期装配，需手工编辑 `config.json`（面板会提示为重启项） |
 | ❌ 未做 | **HTTPS / 内置限流** | 设计上交给反向代理（Nginx / Caddy）。服务本身只提供明文 HTTP，公网部署**必须**置于 HTTPS 反代之后 |
+
+## 🔧 本仓库的二开改动
+
+本仓库（`MOONKEY0510/workbuddy_api`）基于 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 二次开发，改动集中在**面板前端**与**若干缺陷修复**；账号池、调度、上游协议、任务体系等内核逻辑未改动。以下每一项都可在本仓库 `git log` / 文件差异中核对。
+
+### 新增能力
+
+| 能力 | 说明与出处 |
+|---|---|
+| **调用记录视图（新）** | 逐请求明细流水：每次上游尝试记一行——时间 / 账号 / 域 / 模型 / 状态 / 耗时 / 输入 / 缓存命中 / 思考 / 输出 / 合计 / 积分。新增 `internal/calls`（纯内存环形缓冲，最近 300 条）与 `GET /panel/api/calls`；装配与写入点：`cmd/server/main.go`、`internal/server/handler.go`（与用量统计同一汇聚点，成功与否都记）、`internal/pool/entry.go`（搬运缓存 / 思考 token 明细） |
+| **`Dockerfile.cn`（受限网络构建版）** | 与原 Dockerfile 产物等价，仅构建期适配国内 / 受限网络：Go 模块走 `goproxy.cn`、Alpine 包走 USTC 镜像、省略 `# syntax` 指令避免额外拉取 `dockerfile` frontend 镜像、声明并透传 `HTTP_PROXY` 等 ARG 以便清空 Docker Desktop 注入的不可达代理。用法见文件头部注释 |
+
+### 面板前端改造（`internal/panel/index.html` · `internal/panel/app.js`）
+
+| 改动 | 说明 |
+|---|---|
+| **「用量」视图新增缓存 / 思考 / 积分维度** | 从上游 usage 解析并聚合**缓存命中**、**缓存写入**、**思考 token** 与**实际扣除积分**（`usage.credit`）；流式（SSE 末帧）与非流式（聚合响应）两条路径都接，OpenAI 口径 `prompt_tokens_details.cached_tokens`、`completion_tokens_details.reasoning_tokens` 优先，Anthropic 口径 `cache_read_input_tokens`、`cache_creation_input_tokens` 兜底；前端新增缓存构成明细卡（命中 / 写入 / 未命中 + 占比条），各明细表的列头补「缓存命中」「积分」 |
+| **用量趋势图自绘重写** | 纯 SVG 面积 + 折线（不引第三方图表库）：y 轴按「好看的刻度」（1/2/5 × 10ⁿ）取整、渐变填充、跨天分隔线、数据点、悬停十字线与浮动卡片、x 轴按真实时间取点、单点居中不贴边、宽度自适应容器 |
+| **导航与可读性** | 侧栏新增「调用记录」（概览 / 运营 / 系统三组）并接入自动刷新；表头 / 图例中文化（Prompt / Completion → 输入 / 输出）；缓存命中列显示「命中量 + 占输入百分比」；积分单独格式化（小值保精度、大值 k / m 缩写）与千分位整数；账号池「可用 / 总额」积分弱化排版 |
+| **界面细节** | 「模型能力」标题里夹带的开发者备注改为正式提示条；toast 淡出过渡、统计卡布局等样式梳理 |
+
+### 缺陷修复
+
+| 修复 | 说明与出处 |
+|---|---|
+| **批量导入账号整批失败** | `internal/panel/import.go`：导入前确保 `auth_dir` 存在——目录缺失时此前整批账号都会卡在 `SaveAtomic` 写入失败（登录路径早已有该兜底，导入路径缺失） |
+| **导入跳过原因查无实据** | `internal/panel/import.go` + `app.js`：跳过原因改为写入服务端日志，前端导入结果里也直接显示前 3 条——此前只回传前端、前端仅 `console.warn`，「成功 0 个、跳过 N 个」在服务端日志里完全无迹可循 |
+| **用量统计缺积分与缓存口径** | `internal/server/logging.go`（SSE 与聚合响应两条解析路径）、`internal/usage/usage.go`（分桶 / 折叠 / 聚合字段 `credits` · `cached_tokens` · `cache_write_tokens` · `reasoning_tokens`）、`internal/server/handler.go`（汇聚点写入） |
 
 ## 架构总览
 
@@ -585,6 +614,8 @@ http://127.0.0.1:7863/panel/
 
 > 账号行内「任务」按钮打开**积分任务弹窗**：展示全部任务（进度 / 奖励分数与能量 / 状态）；「全部接受」批量报名；「一键完成可自动任务」覆盖 **17 个任务**（推进进度 + 异步计分等待 + **自动领奖**，幂等可重复点）；其余任务展示操作指引。
 
+> 其中「**调用记录**」视图，以及「用量」的缓存命中 / 思考 token / 积分维度与趋势图重写，为**本仓库二开新增**（上游面板没有），详见 [本仓库的二开改动](#-本仓库的二开改动)。
+
 **配置热生效**：保存配置后，`api_key`、`cooldown.soft_rate` / `soft_rate_max`、`features.sanitize_blacklist_fingerprints`、
 `pool.*`（熔断/在途/权重/降权/探索窗口）、`schedule.*`（六类时点 / 开关 / 余额刷新间隔）**立即生效，无需重启**；
 装配期依赖的字段（`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds` / `header_timeout_seconds` / `idle_timeout_seconds`、
@@ -687,6 +718,8 @@ http://127.0.0.1:7863/panel/
 
 **敏感度**：日志不含任何 token 明文（详见[安全与合规](#安全与合规)），无落盘日志文件。
 
+> 面板「调用记录」视图提供同口径的**逐请求明细**（最近 300 条，纯内存、重启清空），字段为 uid / 昵称 / 域 / 模型 / 状态 / 耗时 / token 计数 / 积分，不落盘、不含凭证与请求内容，调试时不必再翻 stdout。
+
 ## 部署运维
 
 ### Docker 镜像
@@ -697,6 +730,7 @@ http://127.0.0.1:7863/panel/
 - 以 `app` 用户（uid 10001）运行，`app/auths` 与 `app/data` 预建
 - 镜像内默认落 `config.example.json` 作为空配置（不含密钥），生产用挂载卷覆盖 `/app/config.json`
 - 内置 `HEALTHCHECK`（`wget /healthz`，30s 间隔）
+- **`Dockerfile.cn`**：受限网络 / 国内环境的等价构建版（`goproxy.cn` + USTC apk 镜像、代理 ARG 可清空），产物与原 Dockerfile 一致；`docker build -f Dockerfile.cn -t workbuddy2api .`，详细参数见文件头部注释
 
 账号 / 数据通过 `docker-compose.yml` 卷挂载持久化：`./auths`、`./data`、`./config.json`。
 
@@ -761,6 +795,7 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 - 默认监听 `:7863`，compose 暴露 `0.0.0.0:7863`，**无内置 TLS**；公网部署必须设置 `api_key`，建议前置反代 / 内网
 - 请求日志字段：序号 / 模型 / 模式 / 状态码 / **uid 前 8 位** / TTFB / token 数——**不含** `accessToken` / `refreshToken` / `api_key` 明文（不读取 `Authorization` 头）
 - 日志写 **stdout / stderr**（容器内进入 `docker logs`），代码无任何落盘日志文件
+- 面板「调用记录」为**纯内存环形缓冲**（最近 300 条，重启即清空），只存 uid / 昵称 / 域 / 模型 / 状态 / 耗时 / token 计数 / 积分，**不含凭证与请求内容**，也不落盘
 
 ### 3. 发布来源与合规边界
 
