@@ -44,9 +44,17 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 }
 
+// setNoStore 禁用浏览器缓存：index.html / app.js 是 go:embed 的静态资源，只在
+// 重新编译时变化，且响应无 ETag / Last-Modified 可供校验——不禁用的话，升级
+// 二进制后浏览器可能继续用旧前端（表现为「新功能不出现」，需手动强刷）。
+func setNoStore(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+}
+
 // index 输出面板页面（静态无秘密；数据接口 /panel/api/* 才走鉴权）。
 func (p *Panel) index(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	setNoStore(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(indexHTML)
@@ -55,6 +63,7 @@ func (p *Panel) index(w http.ResponseWriter, r *http.Request) {
 // appScript 输出前端逻辑（同源脚本，供 CSP script-src 'self' 加载）。
 func (p *Panel) appScript(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	setNoStore(w)
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(appJS)

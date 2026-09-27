@@ -20,6 +20,28 @@ func TestDefault(t *testing.T) {
 	if c.SoftRateDur.Seconds() != 600 {
 		t.Errorf("soft=%v want 600s", c.SoftRateDur)
 	}
+	if c.Server.MaxBodyMB != defaultMaxBodyMB {
+		t.Errorf("server.max_body_mb=%d want %d", c.Server.MaxBodyMB, defaultMaxBodyMB)
+	}
+}
+
+// server.max_body_mb 归一化：0 是合法值（不限，完全对齐上游透传语义）；
+// 负值非法回落默认。
+func TestMaxBodyMBNormalize(t *testing.T) {
+	c, err := ParseConfig([]byte(`{"server":{"max_body_mb":0}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Server.MaxBodyMB != 0 {
+		t.Errorf("explicit 0 (unlimited) must be preserved, got %d", c.Server.MaxBodyMB)
+	}
+	c2, err := ParseConfig([]byte(`{"server":{"max_body_mb":-5}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.Server.MaxBodyMB != defaultMaxBodyMB {
+		t.Errorf("negative must fall back to default %d, got %d", defaultMaxBodyMB, c2.Server.MaxBodyMB)
+	}
 }
 
 func TestLoadFile(t *testing.T) {

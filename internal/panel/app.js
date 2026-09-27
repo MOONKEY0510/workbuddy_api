@@ -130,7 +130,7 @@ $('btnKey').onclick = async () => {
 $('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKey').click(); });
 
 /* ── 路由 ─────────────────────────────────────────────────────────── */
-const TITLES = { accounts: '账号池', usage: '用量', calls: '调用记录', packages: '积分构成', taskscenter: '任务中心', models: '模型与档位', config: '配置', logs: '运行日志' };
+const TITLES = { accounts: '账号池', usage: '用量', calls: '调用记录', packages: '积分构成', taskscenter: '任务中心', models: '模型与档位', keys: 'Key 管理', config: '配置', logs: '运行日志' };
 function go(v) {
   view = v;
   document.querySelectorAll('.view').forEach(s => s.hidden = s.id !== 'view-' + v);
@@ -143,6 +143,7 @@ function go(v) {
   if (v === 'calls') loadCalls();
   if (v === 'packages') loadPackages();
   if (v === 'taskscenter') reattachQueueView();
+  if (v === 'keys') loadKeys();
 }
 document.querySelectorAll('.nav a').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.view); history.replaceState(null, '', '#' + a.dataset.view); });
 go((location.hash || '#accounts').slice(1) in TITLES ? (location.hash || '#accounts').slice(1) : 'accounts');
@@ -604,10 +605,18 @@ $('btnStartLogin').onclick = startAddLogin;
 $('btnOpenUrl').onclick = () => open($('addUrl').textContent, '_blank');
 $('btnCopyUrl').onclick = () => navigator.clipboard.writeText($('addUrl').textContent)
   .then(() => toast('链接已复制', 'ok'), () => toast('复制失败，请手动选择复制', 'err'));
-$('importFile').onchange = async () => {
-  const file = $('importFile').files[0];
+/* 导入 JSON：点击选择与拖拽共用 doImport(file) 入口（FormData 直传 File）。
+   dropzone 替代原生 file input——原生样式是浏览器默认的「选择文件 未选择任何文件」。 */
+async function doImport(file) {
   if (!file) return;
+  if (!/\.json$/i.test(file.name) && file.type !== 'application/json') {
+    $('importErr').hidden = false;
+    $('importErr').textContent = '仅支持 .json 文件：' + file.name;
+    return;
+  }
   $('importDone').hidden = true; $('importErr').hidden = true;
+  $('importFileName').hidden = false;
+  $('importFileName').textContent = file.name + '（' + (file.size / 1024).toFixed(1) + ' KB）';
   const fd = new FormData();
   fd.append('file', file);
   const h = {};
@@ -630,8 +639,86 @@ $('importFile').onchange = async () => {
     $('importErr').hidden = false;
     $('importErr').textContent = '导入失败：' + e.message;
   }
-  $('importFile').value = '';
-};
+  $('importFile').value = ''; // 允许再次选择同一个文件
+}
+$('importFile').onchange = () => doImport($('importFile').files[0]);
+const importDrop = $('importDrop');
+importDrop.addEventListener('click', () => $('importFile').click());
+importDrop.addEventListener('keydown', ev => {
+  if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); $('importFile').click(); }
+});
+importDrop.addEventListener('dragover', ev => { ev.preventDefault(); importDrop.classList.add('drag'); });
+importDrop.addEventListener('dragleave', () => importDrop.classList.remove('drag'));
+importDrop.addEventListener('drop', ev => {
+  ev.preventDefault();
+  importDrop.classList.remove('drag');
+  const f = ev.dataTransfer.files && ev.dataTransfer.files[0];
+  if (f) doImport(f); // 直接用拖入的 File，不依赖 input.files
+});
+
+/* ── select 美化 ─────────────────────────────────────────────────── */
+/* 原生下拉弹层是系统样式（Windows Chrome 蓝色高亮），CSS 无法自定义。这里把
+   原生 select 视觉隐藏——读写与 change 事件全保留（业务代码零改动）——渲染
+   自定义按钮 + fixed 定位弹层（.box 有 overflow:hidden，absolute 弹层会被裁掉，
+   fixed + JS 计算位置才能正常展开；底部空间不足时向上弹）。 */
+function beautifySelect(sel) {
+  if (!sel || sel.dataset.bsel) return;
+  sel.dataset.bsel = '1';
+  const wrap = document.createElement('span');
+  wrap.className = 'bsel';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'bsel-btn' + (sel.classList.contains('xs') ? ' xs' : '');
+  btn.innerHTML = '<span class="cv"></span><span class="ar">▾</span>';
+  const list = document.createElement('span');
+  list.className = 'bsel-list';
+  sel.parentNode.insertBefore(wrap, sel);
+  wrap.append(btn, list);
+  sel.style.display = 'none';
+
+  const sync = () => {
+    const o = sel.selectedOptions && sel.selectedOptions[0];
+    btn.querySelector('.cv').textContent = o ? o.textContent.trim() : '';
+    [...list.children].forEach(it => it.classList.toggle('on', it.dataset.v === sel.value));
+  };
+  sel._sync = sync; // 程序化改 sel.value / 重建 options 后调用（如 renderPkTable）
+  const close = () => { list.classList.remove('on'); btn.classList.remove('on'); };
+  const open = () => {
+    list.innerHTML = [...sel.options].map(o =>
+      '<span class="bsel-it" data-v="' + esc(o.value) + '">' + esc(o.textContent.trim()) + '</span>').join('');
+    sync();
+    list.classList.add('on'); btn.classList.add('on');
+    const r = btn.getBoundingClientRect();
+    list.style.left = r.left + 'px';
+    list.style.minWidth = Math.max(r.width, 160) + 'px';
+    const need = Math.min(list.scrollHeight || 200, 264);
+    if (innerHeight - r.bottom < need + 12) {
+      list.style.top = ''; list.style.bottom = (innerHeight - r.top + 4) + 'px';
+    } else {
+      list.style.bottom = ''; list.style.top = (r.bottom + 4) + 'px';
+    }
+  };
+  btn.addEventListener('click', ev => {
+    ev.stopPropagation();
+    if (list.classList.contains('on')) close(); else open();
+  });
+  list.addEventListener('click', ev => {
+    const it = ev.target.closest('.bsel-it');
+    if (!it) return;
+    if (sel.value !== it.dataset.v) {
+      sel.value = it.dataset.v;
+      sync();
+      sel.dispatchEvent(new Event('change')); // 业务 onchange 照常触发
+    }
+    close();
+  });
+  document.addEventListener('click', ev => { if (!wrap.contains(ev.target)) close(); });
+  sel.addEventListener('change', sync);
+  sync();
+}
+beautifySelect($('usWindow'));  // 用量窗口
+beautifySelect($('qcConc'));    // 任务中心并发
+beautifySelect($('pkAcct'));    // 包明细账号筛选
 
 /* ── 顶部动作 ─────────────────────────────────────────────────────── */
 $('btnAdd').onclick = openAdd;
@@ -652,6 +739,7 @@ function refreshVisible() {
   if (view === 'accounts') loadOverview(true);
   else if (view === 'logs') loadLogs();
   else if (view === 'calls') loadCalls();
+  else if (view === 'keys') loadKeys();
   else if (view === 'taskscenter') reattachQueueView();
 }
 function start() {
@@ -1687,6 +1775,151 @@ async function loadCalls() {
 }
 if ($('btnCalls')) $('btnCalls').onclick = loadCalls;
 
+/* ── Key 管理（托管 API 密钥）────────────────────────────────────── */
+/* 与主密钥（面板登录用，配置页维护）分工：托管密钥只用于调用 /v1/* 与 /status，
+   不能登录面板。这里只做增删改查；密钥校验发生在网关出站鉴权路径。 */
+let keysData = { keys: [] };
+const revealedKeys = new Set(); // 已展开显示的密钥 id（重绘后保持展开态）
+function maskKey(v) {
+  v = String(v || '');
+  return v.length <= 15 ? v : v.slice(0, 10) + '••••' + v.slice(-4);
+}
+async function loadKeys() {
+  if (!$('keysBody')) return;
+  try {
+    const d = await api('keys');
+    keysData = d;
+    renderKeys(d);
+  } catch (e) { /* 概览已提示（401 等由 api() 统一处理） */ }
+}
+function renderKeys(d) {
+  const tb = $('keysBody');
+  if (!tb) return;
+  const list = (d && d.keys) || [];
+  $('keysNote').textContent = list.length
+    ? list.length + ' 枚 · 启用 ' + list.filter(k => k.enabled).length + ' 枚'
+    : '暂无密钥';
+  const warn = $('keysWarn');
+  if (warn) {
+    // 主密钥为空 = 网关不鉴权（任何请求直接放行），此时托管密钥没有意义。
+    if (d && d.auth_required === false) {
+      warn.hidden = false;
+      warn.textContent = '主密钥为空：当前网关不鉴权，任何请求都会直接放行（托管密钥不生效）。请先在「配置」页设置 API 密钥。';
+    } else warn.hidden = true;
+  }
+  tb.innerHTML = list.length ? list.map(k => {
+    const shown = revealedKeys.has(k.id);
+    return '<tr class="' + (k.enabled ? '' : 'off') + '">' +
+      '<td class="mark" aria-hidden="true"><i></i></td>' +
+      '<td class="who"><div class="nm">' + esc(k.name) + '</div><div class="id">' + esc(k.id) + '</div></td>' +
+      '<td><span class="keyval' + (shown ? '' : ' masked') + '">' + esc(shown ? k.value : maskKey(k.value)) + '</span></td>' +
+      '<td>' + (k.enabled ? '<span class="tag ok">启用</span>' : '<span class="tag mute">已停用</span>') + '</td>' +
+      '<td style="color:var(--ink-3)">' + ago(k.created_at) + '</td>' +
+      '<td class="num" style="color:var(--ink-3)">' + ago(k.last_used) + '</td>' +
+      '<td class="acts">' +
+        '<button class="xs ghost" data-a="reveal" data-id="' + esc(k.id) + '">' + (shown ? '隐藏' : '显示') + '</button>' +
+        '<button class="xs ghost" data-a="copy" data-id="' + esc(k.id) + '">复制</button>' +
+        '<button class="xs ghost" data-a="rename" data-id="' + esc(k.id) + '">改名</button>' +
+        '<button class="xs ghost" data-a="toggle" data-id="' + esc(k.id) + '">' + (k.enabled ? '停用' : '启用') + '</button>' +
+        '<button class="xs ghost danger" data-a="remove" data-id="' + esc(k.id) + '">删除</button>' +
+      '</td></tr>';
+  }).join('') : '<tr><td colspan="7"><div class="empty"><div class="big">还没有托管密钥</div>' +
+    '点上方「新建密钥」，把生成的密钥填到客户端的 api_key（OpenAI SDK / CLI）即可调用</div></td></tr>';
+}
+function keyByID(id) { return (keysData.keys || []).find(k => k.id === id); }
+$('keysBody').addEventListener('click', async ev => {
+  const b = ev.target.closest('button[data-a]');
+  if (!b) return;
+  const id = b.dataset.id, a = b.dataset.a, k = keyByID(id);
+  if (!k) return;
+  if (a === 'reveal') {
+    if (revealedKeys.has(id)) revealedKeys.delete(id); else revealedKeys.add(id);
+    renderKeys(keysData);
+    return;
+  }
+  if (a === 'copy') {
+    try { await navigator.clipboard.writeText(k.value); toast('密钥已复制', 'ok'); }
+    catch (e) { toast('复制失败，请点「显示」后手动选择', 'err'); }
+    return;
+  }
+  if (a === 'rename') {
+    const name = prompt('新的备注名（留空 = 未命名）', k.name);
+    if (name === null) return; // 取消
+    b.disabled = true;
+    try {
+      await api('keys/' + encodeURIComponent(id) + '/update', {
+        method: 'POST', body: JSON.stringify({ name, enabled: k.enabled }),
+      });
+      toast('已改名', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+    finally { b.disabled = false; loadKeys(); }
+    return;
+  }
+  if (a === 'toggle') {
+    b.disabled = true;
+    try {
+      await api('keys/' + encodeURIComponent(id) + '/update', {
+        method: 'POST', body: JSON.stringify({ name: k.name, enabled: !k.enabled }),
+      });
+      toast(k.enabled ? '已停用（该密钥立即失效）' : '已启用', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+    finally { b.disabled = false; loadKeys(); }
+    return;
+  }
+  if (a === 'remove') {
+    if (!confirm('删除后该密钥立即失效且不可恢复。确认删除「' + k.name + '」？')) return;
+    b.disabled = true;
+    try {
+      await api('keys/' + encodeURIComponent(id) + '/remove', { method: 'POST' });
+      revealedKeys.delete(id);
+      toast('已删除', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+    finally { b.disabled = false; loadKeys(); }
+  }
+});
+if ($('btnKeysReload')) $('btnKeysReload').onclick = loadKeys;
+
+/* 新建密钥走弹窗：先填名称再生成。避免「误点一下就直接产出一枚
+   『未命名』密钥」——密钥是发给客户端的凭证，名称是日后辨认与撤销的唯一线索。 */
+function openKeyNew() {
+  $('keyNewName').value = '';
+  $('keyNewErr').hidden = true;
+  $('keyNewVeil').classList.add('on');
+  setTimeout(() => $('keyNewName').focus(), 60);
+}
+function closeKeyNew() { $('keyNewVeil').classList.remove('on'); }
+async function submitKeyNew() {
+  const name = ($('keyNewName').value || '').trim();
+  if (!name) {
+    $('keyNewErr').hidden = false;
+    $('keyNewErr').textContent = '请先输入名称（用于日后辨认与撤销）';
+    $('keyNewName').focus();
+    return;
+  }
+  const b = $('btnKeyNewOk');
+  b.disabled = true; b.textContent = '创建中…';
+  try {
+    const r = await api('keys', { method: 'POST', body: JSON.stringify({ name }) });
+    revealedKeys.add(r.key.id); // 新建即展开：列表里可直接核对 / 手动复制
+    closeKeyNew();
+    let copied = false;
+    try { await navigator.clipboard.writeText(r.key.value); copied = true; }
+    catch (e) { /* 剪贴板不可用（非 HTTPS 等）：列表已展开，手动选择复制 */ }
+    toast(copied ? '密钥「' + name + '」已创建并复制到剪贴板' : '密钥「' + name + '」已创建（点「显示」查看完整值）', 'ok');
+    loadKeys();
+  } catch (e) {
+    $('keyNewErr').hidden = false;
+    $('keyNewErr').textContent = e.message;
+  } finally { b.disabled = false; b.textContent = '创建'; }
+}
+if ($('btnKeyCreate')) $('btnKeyCreate').onclick = openKeyNew;
+if ($('btnKeyNewCancel')) $('btnKeyNewCancel').onclick = closeKeyNew;
+if ($('btnKeyNewOk')) $('btnKeyNewOk').onclick = submitKeyNew;
+if ($('keyNewName')) $('keyNewName').addEventListener('keydown', e => {
+  if (e.key === 'Enter') submitKeyNew();
+  if (e.key === 'Escape') closeKeyNew();
+});
+
 /* ── 积分构成 ─────────────────────────────────────────────────────── */
 /* 一个账号的余额是若干积分包之和。包按来源命名（「国内运营裂变包」「拉新权益包」
    「个人体验版」…），面额从 6 到 1500 不等，且**按次发放**。所以两个任务完成度
@@ -1725,97 +1958,289 @@ function pkBySource(packs) {
   return [...m.values()].sort((a, b) => b.size - a.size);
 }
 
+let pkData = { accounts: [] };
+const pkOpen = new Set();  // 展开的来源组：uid|groupKey
+let pkTableUid = '';       // 包明细表筛选：'' = 全部账号
+let pkColorMap = new Map(); // 来源键 → 颜色（renderPackages 重建；卡片与明细表共用）
+function pkColorOf(k) { return pkColorMap.get(k) || pkColor(0); }
+
+// pkDaysLeft 包到期剩余天数（无法解析 → null）。end_time 形如
+// "2026-10-18 08:55:20"（空格分隔），先换 T 再喂 Date——否则部分浏览器（Safari）
+// 直接解析返回 NaN。
+function pkDaysLeft(end) {
+  if (!end) return null;
+  const t = new Date(String(end).replace(' ', 'T')).getTime();
+  if (isNaN(t)) return null;
+  return Math.max(0, Math.ceil((t - Date.now()) / 86400000));
+}
+
+// pkSub 包的来源短标（sub_product_code / package_code 去掉冗长前缀）。
+function pkSub(p) {
+  return (p.sub_product_code || '').replace(/^sp_tcaca_codebuddyide_?/, '') ||
+         (p.package_code || '').replace(/^TCACA_/, '');
+}
+
 function renderPackages(d) {
   const list = (d.accounts || []);
+  pkData = d;
   if (!list.length) {
     $('pkSummary').innerHTML = '<div class="empty">没有账号</div>';
+    $('pkExpiry').innerHTML = '<div class="empty">没有账号</div>';
+    $('pkTableBody').innerHTML = '<tr><td colspan="8"><div class="empty">没有账号</div></td></tr>';
+    $('pkAcct').innerHTML = '<option value="">全部账号</option>';
     return;
   }
 
-  // 包名 → 稳定色号（跨账号一致，方便肉眼对齐）
-  const names = [];
+  // 来源键 → 稳定色号：按全部账号里该来源的总面额降序分配，跨账号同色即同类。
+  const szByKey = new Map();
   for (const a of list) for (const s of pkBySource(a.packages || [])) {
-    if (!names.includes(s.key)) names.push(s.key);
+    szByKey.set(s.key, (szByKey.get(s.key) || 0) + Number(s.size || 0));
   }
-  names.sort((x, y) => {
-    const sz = n => Math.max(...list.map(a => {
-      const f = pkBySource(a.packages || []).find(s => s.key === n);
-      return f ? f.size : 0;
-    }));
-    return sz(y) - sz(x);
-  });
-  const colorOf = n => pkColor(names.indexOf(n));
-  // 键 → 展示名，供卡片与明细表共用（同一来源必然同色同名）。
-  const labelOf = {};
-  for (const a of list) for (const s of pkBySource(a.packages || [])) labelOf[s.key] = s;
+  const names = [...szByKey.keys()].sort((x, y) => szByKey.get(y) - szByKey.get(x));
+  pkColorMap = new Map(names.map((k, i) => [k, pkColor(i)]));
 
-  const maxRemain = Math.max(1, ...list.map(a => Number(a.remain || 0)));
+  renderPkCards(list);
+  renderPkExpiry(list);
+  renderPkTable();
+  $('pkNote').textContent = list.length + ' 个账号 · 实时查询上游';
+}
 
+/* 账号卡片：来源分组（色点 + 名称 + 个数 + 剩余/总额 + 进度条），点击组展开逐包
+   明细（名称 / 剩余 / 额度 / 到期时间，参照官方客户端的配额查询卡片）；
+   点卡片标题行则在下方「包明细」表筛选该账号。 */
+function renderPkCards(list) {
   $('pkSummary').innerHTML = list.map(a => {
     if (a.error) {
       return '<div class="pk-card"><div class="who"><span class="nm">' +
-        esc((a.nickname || a.uid.slice(0, 8))) + '</span>' +
+        esc(a.nickname || a.uid.slice(0, 8)) + '</span>' +
         '<span class="realm">' + esc(a.realm || '') + '</span></div>' +
         '<div class="err">查询失败：' + esc(a.error) + '</div></div>';
     }
     const srcs = pkBySource(a.packages || []);
-    const total = Math.max(1, Number(a.size || 0));
-    const bar = srcs.map(s =>
-      '<i style="width:' + (s.size / total * 100).toFixed(2) + '%;background:' +
-      colorOf(s.key) + '" title="' + esc(s.name) + ' ' + fmtTok(s.size) + '"></i>'
-    ).join('');
-    const legend = srcs.map(s =>
-      '<span><i style="background:' + colorOf(s.key) + '"></i>' +
-      esc(s.name.replace(/^CodeBuddy/, '')) + ' x' + s.n + ' · ' + fmtTok(s.size) +
-      (s.minCreated ? ' · 首发 ' + esc(s.minCreated.slice(5)) : '') + '</span>'
-    ).join('');
-    return '<div class="pk-card">' +
-      '<div class="who"><span class="nm">' + esc(a.nickname || a.uid.slice(0, 8)) + '</span>' +
+    const groups = srcs.map(s => {
+      const open = pkOpen.has(a.uid + '|' + s.key);
+      const pct = Math.min(100, Number(s.remain || 0) / Math.max(1, Number(s.size || 0)) * 100);
+      // 进度条语义对齐用量明细卡：剩余充足绿、偏低黄、见底红。
+      const barCls = pct >= 50 ? '' : (pct >= 20 ? ' class="warn"' : ' class="bad"');
+      const items = open ? (a.packages || [])
+        .filter(p => ((p.package_code || '') + '|' + (p.name || '(未命名)')) === s.key)
+        .map(p => {
+          const dl = pkDaysLeft(p.end_time);
+          const dlTxt = dl == null ? '' : '（' + dl + ' 天）';
+          return '<div class="pk-item">' +
+            '<span class="nm" title="' + esc(p.name || '') +
+            (pkSub(p) ? ' · ' + esc(pkSub(p)) : '') + '">' + esc(p.name || '(未命名)') + '</span>' +
+            '<span class="rv">' + fmtInt(p.remain) + '<span class="of"> / ' + fmtInt(p.size) + '</span></span>' +
+            '<span class="exp">' + esc((p.end_time || '').slice(0, 16).replace('T', ' ') || '—') + dlTxt + '</span></div>';
+        }).join('') : '';
+      return '<div class="pk-grp" data-uid="' + esc(a.uid) + '" data-key="' + esc(s.key) +
+        '" title="点击' + (open ? '收起' : '展开') + '该来源的逐包明细">' +
+        '<div class="hd"><i style="background:' + pkColorOf(s.key) + '"></i>' +
+        '<span class="nm">' + esc(s.name.replace(/^CodeBuddy/, '')) + '</span>' +
+        '<span class="cnt">(' + s.n + ')</span>' +
+        '<span class="rv">' + fmtInt(s.remain) + '<span class="of"> / ' + fmtInt(s.size) + '</span></span></div>' +
+        '<div class="pbar"><i' + barCls + ' style="width:' + pct.toFixed(1) + '%"></i></div>' +
+        (open ? '<div class="items">' + items + '</div>' : '') +
+        '</div>';
+    }).join('');
+    return '<div class="pk-card" data-uid="' + esc(a.uid) + '">' +
+      '<div class="who" title="点击在下方「包明细」中只看该账号"><span class="nm">' +
+      esc(a.nickname || a.uid.slice(0, 8)) + '</span>' +
       '<span class="realm">' + esc(a.realm || '') + '</span></div>' +
       '<div class="big">' + fmtTok(a.remain) + '</div>' +
-      '<div class="sub">共 ' + fmtTok(a.size) + ' · ' + (a.packages || []).length +
-      ' 个包 · 占最高 ' + (Number(a.remain || 0) / maxRemain * 100).toFixed(0) + '%</div>' +
-      '<div class="mixbar">' + bar + '</div>' +
-      '<div class="pk-legend">' + legend + '</div>' +
+      '<div class="sub">共 ' + fmtTok(a.size) + ' · ' + (a.packages || []).length + ' 个包</div>' +
+      groups +
       '</div>';
   }).join('');
+}
 
-  $('pkNote').textContent = list.length + ' 个账号 · 实时查询上游';
+/* 到期分布：横向分段柱状图（每段 = 一个包）。行 = 剩余天数（≤30 天逐天一行，
+   更长的并入「30+ 天」，最快到期的排最上面）；灰色轨道代表本行额度总量，
+   绿段 = 各包剩余 / 本行额度（额度未动即占满，消耗越多灰缺口越大），
+   右侧为当天到期的可用积分合计。 */
+function renderPkExpiry(list) {
+  const byDay = new Map();
+  let noEnd = 0, noEndRemain = 0, beyond = false;
+  for (const a of list) {
+    if (a.error) continue;
+    for (const p of (a.packages || [])) {
+      // 已用完的包不参与分布：这张图回答的是"还能用的积分什么时候过期"，
+      // 剩余 0 的包只会留下值为 0 的空行。
+      const r = Number(p.remain || 0);
+      if (r <= 0) continue;
+      const dl = pkDaysLeft(p.end_time);
+      if (dl == null) { noEnd++; noEndRemain += r; continue; }
+      if (dl > 30) beyond = true;
+      const day = Math.min(dl, 30);
+      const arr = byDay.get(day) || [];
+      arr.push({ a, p });
+      byDay.set(day, arr);
+    }
+  }
+  const days = [...byDay.keys()].sort((x, y) => x - y);
+  let html = days.map(day => {
+    const items = byDay.get(day);
+    const total = items.reduce((s, e) => s + Number(e.p.remain || 0), 0);
+    // 填充基准 = **本行**的额度总量：绿段 = 各包剩余 / 本行额度。
+    // 额度未动 → 绿段占满整条轨道；消耗越多，灰色缺口越大（行与行之间不做全局归一）。
+    const totalSize = Math.max(1, items.reduce((s, e) => s + Number(e.p.size || 0), 0));
+    const segs = items.map(e => {
+      const r = Number(e.p.remain || 0);
+      // 极小值也留最小可见宽度（否则小额包在轨道上完全看不见）。
+      const w = Math.max(0.6, r / totalSize * 100);
+      const who = e.a.nickname || e.a.uid.slice(0, 8);
+      const dl = pkDaysLeft(e.p.end_time);
+      // 悬停信息放 data-*（自定义悬浮卡消费），不再用原生 title。
+      return '<i style="width:' + w.toFixed(2) + '%"' +
+        ' data-who="' + esc(who) + '" data-realm="' + esc(e.a.realm || '') + '"' +
+        ' data-name="' + esc(e.p.name || '(未命名)') + '"' +
+        ' data-remain="' + r + '" data-size="' + Number(e.p.size || 0) + '" data-used="' + Number(e.p.used || 0) + '"' +
+        ' data-end="' + esc(e.p.end_time || '') + '" data-days="' + (dl == null ? -1 : dl) + '"></i>';
+    }).join('');
+    const lbl = (day === 30 && beyond) ? '30+ 天' : day + ' 天';
+    return '<div class="pkx-row"><span class="lbl">' + lbl + '</span>' +
+      '<span class="bar">' + segs + '</span>' +
+      '<span class="val">' + fmtInt(total) + '</span></div>';
+  }).join('');
+  if (noEnd) {
+    html += '<div class="pkx-row"><span class="lbl">无到期</span><span class="bar"></span>' +
+      '<span class="val">' + fmtInt(noEndRemain) + '</span></div>';
+  }
+  if (!html) html = '<div class="empty">没有可用积分（包已用完，或查询不到到期时间）</div>';
+  $('pkExpiry').innerHTML = html;
+  // 悬停卡：innerHTML 会把它清掉，每次渲染后懒重建。
+  if (!$('pkExpiry').querySelector('.pk-tip')) {
+    const t = document.createElement('div');
+    t.className = 'pk-tip';
+    $('pkExpiry').appendChild(t);
+  }
+}
 
-  // 逐包明细：每个账号一个表，包的**面额**列是重点
-  $('pkDetail').innerHTML = list.map(a => {
-    if (a.error) return '';
-    const packs = (a.packages || []);
-    const rows = packs.map(p => {
-      const k = (p.package_code || '') + '|' + (p.name || '(未命名)');
-      const sub = (p.sub_product_code || '').replace(/^sp_tcaca_codebuddyide_?/, '') ||
-                  (p.package_code || '').replace(/^TCACA_/, '');
-      return '<tr><td class="mark" aria-hidden="true"><i style="background:' +
-        colorOf(k) + '"></i></td>' +
+/* 到期分布悬停卡：事件委托绑在 #pkExpiry 容器（静态元素，段行重渲染不受影响）。
+   跟随鼠标，靠近右/下边缘时翻转到不溢出的一侧；到期临近色与明细表同口径
+   （≤3 天红、≤7 天黄）。 */
+if ($('pkExpiry')) {
+  const host = $('pkExpiry');
+  let tip = null, cur = null;
+  const ensureTip = () => {
+    if (!tip || !host.contains(tip)) {
+      tip = host.querySelector('.pk-tip');
+      if (!tip) { tip = document.createElement('div'); tip.className = 'pk-tip'; host.appendChild(tip); }
+    }
+    return tip;
+  };
+  const moveTip = ev => {
+    if (!tip || !tip.classList.contains('on')) return;
+    const pad = 14;
+    let x = ev.clientX + pad, y = ev.clientY + pad;
+    const w = tip.offsetWidth || 240, h = tip.offsetHeight || 130;
+    if (x + w > innerWidth - 8) x = ev.clientX - w - pad;
+    if (y + h > innerHeight - 8) y = ev.clientY - h - pad;
+    tip.style.left = x + 'px';
+    tip.style.top = y + 'px';
+  };
+  const hide = () => { cur = null; if (tip) tip.classList.remove('on'); };
+  host.addEventListener('mouseover', ev => {
+    const seg = ev.target.closest('.pkx-row .bar i');
+    if (!seg) return;
+    cur = seg;
+    const d = seg.dataset;
+    const t = ensureTip();
+    const dl = Number(d.days) || 0;
+    const size = Number(d.size || 0);
+    const pct = size > 0 ? Math.min(100, Number(d.remain || 0) / size * 100) : 0;
+    const dcol = dl <= 3 ? 'var(--bad)' : (dl <= 7 ? 'var(--warn)' : 'var(--ok)');
+    t.innerHTML =
+      '<div class="nm">' + esc(d.name || '(未命名)') + '</div>' +
+      '<div class="t">' + esc(d.who) + (d.realm ? ' · ' + esc(d.realm) : '') + '</div>' +
+      '<div class="r">剩余 / 额度<b>' + fmtInt(d.remain) + ' / ' + fmtInt(size) + '</b></div>' +
+      '<div class="r">已用<b>' + fmtInt(d.used) + '</b></div>' +
+      '<div class="r">到期（' + dl + ' 天）<b>' + esc((d.end || '').slice(0, 16).replace('T', ' ')) + '</b></div>' +
+      '<div class="pbar"><i style="width:' + pct.toFixed(1) + '%;background:' + dcol + '"></i></div>';
+    t.classList.add('on');
+    moveTip(ev);
+  });
+  host.addEventListener('mousemove', ev => {
+    if (cur && ev.target.closest('.pkx-row .bar i') === cur) moveTip(ev);
+  });
+  host.addEventListener('mouseout', ev => {
+    if (ev.target.closest && ev.target.closest('.pkx-row .bar i')) hide();
+  });
+}
+
+/* 包明细：专门的逐包列表，**按需加载**——默认不渲染任何行（选中账号或点
+   账号卡片标题后才显示）；「全部账号」视图按到期升序（最快作废的最上面），
+   单账号视图按面额降序（对齐「这个号手里有哪些大额包」的查看习惯）。 */
+const PK_ALL = '__all__'; // 包明细「全部账号」哨兵（与空值「未选择」区分）
+
+function renderPkTable() {
+  const list = (pkData.accounts || []).filter(a => !a.error);
+  const sel = $('pkAcct');
+  // 账号筛选下拉：仅在账号集合变化时重建（保留当前选中，刷新不打断阅读）。
+  // 默认不选（value=''）→ 表格不渲染任何行：包明细按需加载，不一次性摊开全部。
+  if (sel.options.length !== list.length + 2) {
+    sel.innerHTML = '<option value="">选择账号…</option>' +
+      '<option value="' + PK_ALL + '">全部账号</option>' + list.map(a =>
+        '<option value="' + esc(a.uid) + '">' +
+        esc(a.nickname || a.uid.slice(0, 8)) + ' · ' + esc(a.realm || '') + '</option>').join('');
+  }
+  if (pkTableUid && pkTableUid !== PK_ALL && !list.some(a => a.uid === pkTableUid)) pkTableUid = '';
+  sel.value = pkTableUid;
+  if (sel._sync) sel._sync(); // 程序化赋值后同步自定义下拉的按钮文本/选中态
+
+  const tb = $('pkTableBody');
+  if (!pkTableUid) {
+    tb.innerHTML = '<tr><td colspan="8"><div class="empty"><div class="big">选择账号查看包明细</div>' +
+      '在上方下拉选择账号（或点「账号对比」卡片的标题行）；选「全部账号」则一次列出所有包</div></td></tr>';
+    $('pkTableNote').textContent = '未选择账号';
+    return;
+  }
+
+  const rows = [];
+  for (const a of list) {
+    if (pkTableUid !== PK_ALL && a.uid !== pkTableUid) continue;
+    for (const p of (a.packages || [])) rows.push({ a, p });
+  }
+  const single = pkTableUid !== PK_ALL;
+  if (single) rows.sort((x, y) => Number(y.p.size || 0) - Number(x.p.size || 0));
+  else rows.sort((x, y) => {
+    const dx = pkDaysLeft(x.p.end_time), dy = pkDaysLeft(y.p.end_time);
+    return (dx == null ? 99999 : dx) - (dy == null ? 99999 : dy);
+  });
+
+  tb.innerHTML = rows.length ? rows.map(r => {
+    const p = r.p, a = r.a;
+    const k = (p.package_code || '') + '|' + (p.name || '(未命名)');
+    const sub = pkSub(p);
+    const dl = pkDaysLeft(p.end_time);
+    // 到期临近提示：≤3 天红、≤7 天黄。
+    const dlStyle = dl == null ? '' : (dl <= 3 ? ' style="color:var(--bad)"' : (dl <= 7 ? ' style="color:var(--warn)"' : ''));
+    const dlTxt = dl == null ? '' : '<span class="cch-p">（' + dl + ' 天）</span>';
+    return '<tr' + (Number(p.remain || 0) <= 0 ? ' class="off"' : '') + '>' +
+      '<td class="mark" aria-hidden="true"><i style="background:' + pkColorOf(k) + '"></i></td>' +
+      '<td>' + esc(a.nickname || a.uid.slice(0, 8)) +
+        '<div class="note">' + esc(a.realm || '') + '</div></td>' +
       '<td>' + esc(p.name || '(未命名)') +
         (sub ? '<div class="note">' + esc(sub) + '</div>' : '') + '</td>' +
-      '<td class="num">' + fmtTok(p.size) + '</td>' +
-      '<td class="num">' + fmtTok(p.remain) + '</td>' +
-      '<td class="num">' + fmtTok(p.used) + '</td>' +
+      '<td class="num">' + fmtInt(p.size) + '</td>' +
+      '<td class="num">' + fmtInt(p.remain) + '</td>' +
+      '<td class="num">' + fmtInt(p.used) + '</td>' +
       '<td class="num">' + esc((p.created_at || '').slice(0, 16).replace('T', ' ') || '—') + '</td>' +
-      '<td class="num">' + esc((p.end_time || '').slice(0, 10) || '—') + '</td>' +
+      '<td class="num"' + dlStyle + '>' + esc((p.end_time || '').slice(0, 10) || '—') + dlTxt + '</td>' +
       '</tr>';
-    }).join('');
-    return '<div class="box"><header><h3>' +
-      esc(a.nickname || a.uid.slice(0, 8)) + ' · ' + esc(a.realm || '') +
-      '</h3><span class="grow"></span><span class="note">余额 ' + fmtTok(a.remain) +
-      ' / 总额 ' + fmtTok(a.size) + ' · ' + packs.length + ' 个包（按面额降序）</span>' +
-      '</header><div class="tbl-wrap"><table class="acc"><thead><tr>' +
-      '<th class="mark" aria-hidden="true"></th><th>包名 / 来源</th>' +
-      '<th class="num">面额</th><th class="num">剩余</th><th class="num">已用</th>' +
-      '<th class="num">发放</th><th class="num">到期</th>' +
-      '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
-  }).join('');
+  }).join('') : '<tr><td colspan="8"><div class="empty">没有积分包</div></td></tr>';
+
+  const acct = single ? list.find(a => a.uid === pkTableUid) : null;
+  $('pkTableNote').textContent = acct
+    ? (acct.nickname || acct.uid.slice(0, 8)) + ' · 剩余 ' + fmtTok(acct.remain) +
+      ' / 总额 ' + fmtTok(acct.size) + ' · ' + rows.length + ' 个包（按面额降序）'
+    : '全部账号 · ' + rows.length + ' 个包（按到期升序）';
 }
 
 async function loadPackages() {
   $('pkSummary').innerHTML = '<div class="empty">查询中…（逐账号向上游实时查询）</div>';
-  $('pkDetail').innerHTML = '';
+  $('pkExpiry').innerHTML = '';
+  $('pkTableBody').innerHTML = '';
   try {
     const d = await api('packages');
     renderPackages(d);
@@ -1823,5 +2248,27 @@ async function loadPackages() {
     $('pkSummary').innerHTML = '<div class="empty">读取失败：' + esc(e.message) + '</div>';
   }
 }
+
+// 卡片交互：点来源组标题展开/收起逐包明细；点卡片标题筛选明细表。
+$('pkSummary').addEventListener('click', ev => {
+  if (ev.target.closest('.pk-item')) return; // 展开区内的点击不折叠
+  const grp = ev.target.closest('.pk-grp');
+  if (grp) {
+    const k = grp.dataset.uid + '|' + grp.dataset.key;
+    if (pkOpen.has(k)) pkOpen.delete(k); else pkOpen.add(k);
+    renderPackages(pkData);
+    return;
+  }
+  const who = ev.target.closest('.pk-card .who');
+  if (who) {
+    const uid = who.closest('.pk-card').dataset.uid;
+    if (!uid) return;
+    pkTableUid = uid;
+    renderPkTable();
+    const box = $('pkTableBox');
+    if (box) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+});
+if ($('pkAcct')) $('pkAcct').onchange = () => { pkTableUid = $('pkAcct').value || ''; renderPkTable(); };
 
 if ($('btnPk')) $('btnPk').onclick = loadPackages;

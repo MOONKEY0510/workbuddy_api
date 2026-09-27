@@ -36,6 +36,9 @@ scripts/__pycache__/
 /chart_probe_out.txt
 /probe_out*.txt
 
+# 本地启动实例的 pid 文件（运行时产物，非源码）
+*.pid
+
 # IDE / 编辑器
 .idea/
 .vscode/

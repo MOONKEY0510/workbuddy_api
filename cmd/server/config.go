@@ -22,6 +22,16 @@ type Config struct {
 	AuthDir   string `json:"auth_dir"`   // ./auths
 	StateFile string `json:"state_file"` // ./data/state.json
 
+	// Server 服务端请求防护参数。
+	Server struct {
+		// MaxBodyMB 聊天请求体上限（MB，默认 128）：超限在读入前（Content-Length
+		// 可判）或读入中（chunked）即 413，不把超大 body 完整读进内存。只兜底
+		// 「内存放大」风险（恶意/异常客户端），正常多图/长上下文会话远低于该值。
+		// 0 = 不限（完全对齐上游的透传语义：任意大小完整读入转发，超限交由上游
+		// 自然返回错误——本键被移除前的旧行为）；负值非法，回落默认。
+		MaxBodyMB int `json:"max_body_mb"`
+	} `json:"server"`
+
 	Cooldown struct {
 		// hard_credit / err_threshold / err_cooldown 三个历史键已退役：
 		// 硬冷却固定为次日 04:00（CooldownUntilTomorrow4AM），连续错误语义并入熔断器。
@@ -170,6 +180,11 @@ type Config struct {
 	CostExploreIntervalDur time.Duration `json:"-"`
 }
 
+// defaultMaxBodyMB 聊天请求体默认上限（MB）。取 128 的理由：正常多图/长上下文
+// 会话（历史图片每轮 base64 重发 + 约 37% 膨胀）量级在数十 MB 内，128 留足余量；
+// 同时把「无上限」的恶意内存放大路径兜住。0 = 不限（显式关闭本上限）。
+const defaultMaxBodyMB = 128
+
 // Default 默认配置。
 func Default() *Config {
 	c := &Config{
@@ -178,6 +193,7 @@ func Default() *Config {
 		AuthDir:   "./auths",
 		StateFile: "./data/state.json",
 	}
+	c.Server.MaxBodyMB = defaultMaxBodyMB
 	c.Cooldown.SoftRate = "600s"
 	c.Cooldown.SoftRateMax = "2h"
 	c.Schedule.CheckinHours = []int{9, 21}
@@ -273,7 +289,8 @@ func ParseConfig(raw []byte) (*Config, error) {
 // WriteDefault 在 path 落一份推荐配置（首次运行自动生成，双击即开免手工复制样例）。
 // 值取自 Default()（含超时/熔断/签到排程等推荐值），api_key 用 crypto/rand 随机生成：
 // 安全默认优于示例占位符（listen 绑定 0.0.0.0，空 key 会把网关裸暴露给局域网）。
-// 返回生成的 key 供启动日志透出。已存在时经 O_EXCL 原子拒绝，绝不改写用户配置。
+// 返回生成的 key（供调用方按需使用；不回显进日志）。已存在时经 O_EXCL 原子拒绝，
+// 绝不改写用户配置。
 func WriteDefault(path string) (string, error) {
 	raw := make([]byte, 18)
 	if _, err := rand.Read(raw); err != nil {
@@ -447,6 +464,10 @@ func (c *Config) normalize() error {
 	}
 	if c.Pool.IdleWeightMax <= 0 {
 		c.Pool.IdleWeightMax = 5.0
+	}
+	// 请求体上限：负值非法回落默认（0 是合法值 = 不限，完全对齐上游透传语义）。
+	if c.Server.MaxBodyMB < 0 {
+		c.Server.MaxBodyMB = defaultMaxBodyMB
 	}
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120

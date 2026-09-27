@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/calls"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/httpauth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/keys"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
@@ -53,6 +55,10 @@ type Config struct {
 	// PromptText custom 模式下注入的系统提示词文本（来自 config.PromptText）。
 	PromptText string
 
+	// MaxBodyMB 聊天请求体上限（MB）；<=0 = 不限。零值即"不限"：测试与裸用
+	// NewHandler 的调用方不受影响；main 从 config server.max_body_mb 注入（缺省 128）。
+	MaxBodyMB int
+
 	// GlobalEnabled global realm 路由开关（config global.enabled，缺省 true）。
 	// handler 侧第三道闸（与 main 注入 auth 开关、upstream.GlobalEnabled 呼应）：
 	// false（显式逃生门）时即便 auth realm=global 也不提供 global: 模型名
@@ -67,6 +73,11 @@ type Config struct {
 	// Calls 逐请求明细流水（可选；nil = 不记录）。与 Usage 同汇聚点写入：
 	// 聚合台账回答"用了多少"，这里回答"刚才那次请求发生了什么"。
 	Calls *calls.Ring
+
+	// Keys 托管 API 密钥库（可选；nil = 仅主密钥可调用）。非 nil 时 /v1/* 与
+	// /status 同时接受「任一启用的托管密钥」（面板「Key 管理」维护）——把发给
+	// 客户端 / 同事的调用凭证与管理面主密钥解耦，撤销单枚即可。
+	Keys *keys.Store
 }
 
 // loadLive 返回当前运行期快照；Live 为 nil 时用静态字段合成。
@@ -89,6 +100,15 @@ func (h *Handler) softCooldown() time.Duration {
 		return h.cfg.SoftCooldown
 	}
 	return 600 * time.Second
+}
+
+// maxBodyBytes 返回聊天请求体上限字节数（0 = 不限）。
+// 上限来自 server.max_body_mb（main 装配注入；零值 = 不限，测试与裸用兼容）。
+func (h *Handler) maxBodyBytes() int64 {
+	if h.cfg.MaxBodyMB <= 0 {
+		return 0
+	}
+	return int64(h.cfg.MaxBodyMB) << 20
 }
 
 // notFoundCooldown 上游 404 的固定短冷却时长。
@@ -143,12 +163,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !httpauth.VerifyBearer(r, h.loadLive().APIKey) {
+		if !h.authorize(r) {
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
 			return
 		}
 		next(w, r)
 	}
+}
+
+// authorize 授权判定：主密钥（config.json → api_key）或任一启用的托管密钥
+// （internal/keys，面板「Key 管理」维护）均可通过。
+// 主密钥为空 = 不鉴权（既有语义），此时托管密钥无意义（一切请求直接放行）。
+func (h *Handler) authorize(r *http.Request) bool {
+	if httpauth.VerifyBearer(r, h.loadLive().APIKey) {
+		return true
+	}
+	if h.cfg.Keys == nil {
+		return false
+	}
+	_, ok := h.cfg.Keys.Verify(httpauth.BearerToken(r))
+	return ok
 }
 
 func (h *Handler) healthz(w http.ResponseWriter, r *http.Request) {
@@ -475,13 +509,29 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 客户端 IP 提取（按请求传递到 ChatStream，不透传时 upstream 侧忽略）；
 	// 消除早年共享字段方案的并发交叉污染（issue：ClientIP 竞态）。
 	clientIP := upstream.ExtractClientIP(r)
-	// 请求体无大小上限（max_body_mb 已移除，对齐上游）：完整读入，超限类问题交由
-	// 上游自然返回错误（其响应经既有错误分类链路透出，信息量更大）。#41 的截断
-	// 防御语义保留在读错误路径——移除预拦截后，截断只可能来自客户端自己断流，
-	// 读 body 出错就地 400，不把半截 JSON 喂上游 unmarshal 报 unexpected EOF 冤枉罚号。
-	body, err := io.ReadAll(r.Body)
+	// 请求体上限（server.max_body_mb，缺省 128MB；0 = 不限）：只兜底「内存放大」
+	// 风险——超限在读入前（Content-Length 可判）或读入中（chunked）即 413，不把
+	// 超大 body 完整读进内存。0 时保持"无网关侧上限"的透传语义（任意大小完整
+	// 读入转发，超限交由上游自然返回错误）。#41 的截断防御语义保留在读错误路径
+	// ——读 body 出错就地 400，不把半截 JSON 喂上游 unmarshal 报 unexpected EOF 冤枉罚号。
+	limit := h.maxBodyBytes()
+	if limit > 0 && r.ContentLength > limit {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+			fmt.Sprintf("request body exceeds gateway limit of %d MB (server.max_body_mb; 0 = unlimited)", limit>>20))
+		return
+	}
+	reader := io.Reader(r.Body)
+	if limit > 0 {
+		reader = io.LimitReader(r.Body, limit+1) // 多读 1 字节用于识别"超限"
+	}
+	body, err := io.ReadAll(reader)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
+		return
+	}
+	if limit > 0 && int64(len(body)) > limit {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "payload_too_large",
+			fmt.Sprintf("request body exceeds gateway limit of %d MB (server.max_body_mb; 0 = unlimited)", limit>>20))
 		return
 	}
 	var peek struct {

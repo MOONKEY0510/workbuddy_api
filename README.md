@@ -20,7 +20,7 @@
 
 > **本仓库是 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 的二开版本**，
 > 后者是 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) 的增强分支（Web 管理面板 + 积分任务体系）。
-> 本仓库的二开增量集中在**面板前端改造**与**若干缺陷修复**（新增「调用记录」视图、用量视图与趋势图重写、界面细节调整），
+> 本仓库的二开增量集中在**面板前端改造**与**若干缺陷修复**（新增「调用记录」视图、**「Key 管理」API 密钥管理**、用量视图与趋势图重写、界面细节调整），
 > 清单见 [本仓库的二开改动](#-本仓库的二开改动)；账号池调度、错误分类、提示词体系等内核逻辑保持增强分支原样。
 
 ## 项目简介
@@ -48,7 +48,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | 🗑️ **指纹脱敏** | 出站请求体黑名单指纹字段清洗（可关闭），与提示词体系两层叠加 |
 | 📊 **可观测** | 每请求一行表格日志（TTFB / token 速率 / uid）；`/healthz` 带 `service` 身份标识可接负载均衡 / 宿主探活 |
 | 💾 **状态持久化** | 池状态本地原子落盘 + Upstash Redis 异步镜像（可选），重启择新恢复 |
-| 🖥️ **Web 管理面板** | 内嵌单页面板（明暗主题），账号运维 / 模型档位查询 / 在线改配置（热生效）/ 运行日志 / 积分任务，见 [Web 管理面板](#-web-管理面板) |
+| 🖥️ **Web 管理面板** | 内嵌单页面板（明暗主题），账号运维 / 模型档位查询 / 在线改配置（热生效）/ 运行日志 / 积分任务 / **API 密钥管理**，见 [Web 管理面板](#-web-管理面板) |
 
 ## 🎯 成长任务一键完成（17/18）
 
@@ -180,6 +180,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | 能力 | 说明与出处 |
 |---|---|
 | **调用记录视图（新）** | 逐请求明细流水：每次上游尝试记一行——时间 / 账号 / 域 / 模型 / 状态 / 耗时 / 输入 / 缓存命中 / 思考 / 输出 / 合计 / 积分。新增 `internal/calls`（纯内存环形缓冲，最近 300 条）与 `GET /panel/api/calls`；装配与写入点：`cmd/server/main.go`、`internal/server/handler.go`（与用量统计同一汇聚点，成功与否都记）、`internal/pool/entry.go`（搬运缓存 / 思考 token 明细） |
+| **API 密钥管理（新）** | 侧边栏新增「Key 管理」视图，把「调用凭证」与「面板登录凭证」解耦。`internal/keys`（托管密钥库：`data/api_keys.json` 0600 原子落盘、常量时间校验、`last_used` 防抖落盘、上限 50 枚）+ `internal/panel/keys.go`（`GET/POST /panel/api/keys`、`/{id}/update`、`/{id}/remove`）+ 前端视图与 `internal/server/handler.go`（`authorize`：主密钥或任一启用托管密钥）。**权限边界**：托管密钥只授权 `/v1/*`、`/status`，面板管理面只认主密钥——避免「调用凭证 → 管理面」的权限升级 |
 | **`Dockerfile.cn`（受限网络构建版）** | 与原 Dockerfile 产物等价，仅构建期适配国内 / 受限网络：Go 模块走 `goproxy.cn`、Alpine 包走 USTC 镜像、省略 `# syntax` 指令避免额外拉取 `dockerfile` frontend 镜像、声明并透传 `HTTP_PROXY` 等 ARG 以便清空 Docker Desktop 注入的不可达代理。用法见文件头部注释 |
 
 ### 面板前端改造（`internal/panel/index.html` · `internal/panel/app.js`）
@@ -189,6 +190,10 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | **「用量」视图新增缓存 / 思考 / 积分维度** | 从上游 usage 解析并聚合**缓存命中**、**缓存写入**、**思考 token** 与**实际扣除积分**（`usage.credit`）；流式（SSE 末帧）与非流式（聚合响应）两条路径都接，OpenAI 口径 `prompt_tokens_details.cached_tokens`、`completion_tokens_details.reasoning_tokens` 优先，Anthropic 口径 `cache_read_input_tokens`、`cache_creation_input_tokens` 兜底；前端新增缓存构成明细卡（命中 / 写入 / 未命中 + 占比条），各明细表的列头补「缓存命中」「积分」 |
 | **用量趋势图自绘重写** | 纯 SVG 面积 + 折线（不引第三方图表库）：y 轴按「好看的刻度」（1/2/5 × 10ⁿ）取整、渐变填充、跨天分隔线、数据点、悬停十字线与浮动卡片、x 轴按真实时间取点、单点居中不贴边、宽度自适应容器 |
 | **导航与可读性** | 侧栏新增「调用记录」（概览 / 运营 / 系统三组）并接入自动刷新；表头 / 图例中文化（Prompt / Completion → 输入 / 输出）；缓存命中列显示「命中量 + 占输入百分比」；积分单独格式化（小值保精度、大值 k / m 缩写）与千分位整数；账号池「可用 / 总额」积分弱化排版 |
+| **「积分构成」视图重做** | **账号对比**：来源分组卡片（色点 + 名称 + 个数 + 剩余/总额 + 进度条），点击组展开逐包明细（剩余/额度/到期时间）；点卡片标题在下方列表筛选该账号 → **积分到期分布**：横向分段柱状图（灰轨道 = 本行额度合计，绿段 = 各包剩余 / 本行额度——额度未动即占满、消耗越多灰缺口越大，剩余 0 的包不占位；≤30 天逐天、更长并入「30+ 天」）→ **包明细**：专门逐包列表，**按需加载**（默认不渲染，选账号或点卡片标题后显示；「全部账号」按到期升序、单账号按面额降序，≤3 天到期标红 / ≤7 天标黄）。轨道悬停为自定义信息卡（替代原生 `title`） |
+| **Key 管理交互与弹窗** | 新建密钥改为**弹窗先填名称再生成**（空值拦截、Enter 创建 / Esc 取消；避免误点直接产出「未命名」密钥）；弹窗标题加图标徽章、按钮全尺寸；列表支持掩码显示 / 复制 / 改名 / 停用 / 删除，停用与删除立即失效 |
+| **导入 JSON 拖放区** | 原生 `<input type=file>`（「选择文件 未选择任何文件」）替换为虚线拖放区：点击选择 / 拖拽文件 / 键盘（Enter / 空格）三入口统一到 `doImport(file)`；显示已选文件名与大小，非 `.json` 前端直接拒绝 |
+| **自定义下拉组件** | 原生 `<select>` 弹层是系统样式（Windows Chrome 蓝色高亮）无法自定义：视觉隐藏原生 select（读写与 `change` 事件全保留，业务代码零改动），渲染自定义按钮 + `fixed` 定位弹层（`.box` 有 `overflow:hidden`，absolute 弹层会被裁掉；底部空间不足自动向上弹）。覆盖用量时间窗口 / 任务中心并发 / 包明细账号筛选 |
 | **界面细节** | 「模型能力」标题里夹带的开发者备注改为正式提示条；toast 淡出过渡、统计卡布局等样式梳理 |
 
 ### 缺陷修复
@@ -198,6 +203,13 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | **批量导入账号整批失败** | `internal/panel/import.go`：导入前确保 `auth_dir` 存在——目录缺失时此前整批账号都会卡在 `SaveAtomic` 写入失败（登录路径早已有该兜底，导入路径缺失） |
 | **导入跳过原因查无实据** | `internal/panel/import.go` + `app.js`：跳过原因改为写入服务端日志，前端导入结果里也直接显示前 3 条——此前只回传前端、前端仅 `console.warn`，「成功 0 个、跳过 N 个」在服务端日志里完全无迹可循 |
 | **用量统计缺积分与缓存口径** | `internal/server/logging.go`（SSE 与聚合响应两条解析路径）、`internal/usage/usage.go`（分桶 / 折叠 / 聚合字段 `credits` · `cached_tokens` · `cache_write_tokens` · `reasoning_tokens`）、`internal/server/handler.go`（汇聚点写入） |
+| **启动日志回显 api_key** | `cmd/server/main.go`：首次自动生成配置时密钥明文进日志（docker logs / 终端历史可持久化），改为只提示「已写入配置文件」——与 README「日志不含密钥明文」的承诺恢复自洽 |
+| **脱敏开关热更新数据竞争** | `internal/upstream/client.go` + `cmd/server/main.go`：面板保存配置直接写 `SanitizeFingerprints` 字段，与并发出站读取构成数据竞争；新增 `SetSanitizeFingerprints` / `SanitizeEnabled()`（互斥保护：热改装载后以热改值为准，未热改回落装配期字段） |
+| **请求体无上限的内存放大面** | `cmd/server/config.go` + `internal/server/handler.go`：恢复 `server.max_body_mb`（默认 128MB，超限读入前 / 读入中即 413；`0` = 不限，保留「对齐上游」透传语义）；`docker-compose.yml` 端口默认只绑 `127.0.0.1` |
+| **主按钮悬停「变白」** | `index.html`：通用 `button:hover` 的纯色背景特异性 (0,2,1) 高于 `button.primary` (0,1,1)，悬停时渐变被换成 `surface-3`（浅色主题近白）→ 白底白字；`button.primary:hover` 显式写回 `background: var(--grad)` |
+| **弹窗底部圆角尖角** | `index.html`：`.dlg` 缺 `overflow: hidden`，footer 的 `surface-2` 背景方角从圆角外露出（弹窗底部两角「尖角」）；补裁剪，内部滚动仍由 `.body` 自身承担 |
+| **到期分布轨道被钳成 92px** | `index.html`：全局 `.bar`（账号池积分条）带 `max-width: 92px; margin-top: 6px`，同名类漏进 `.pkx-row .bar`（与 v1.9.0 `.us-wrapbar` 同一坑）；显式 `max-width: none; margin: 0` 抵消 |
+| **升级后浏览器沿用旧前端** | `internal/panel/index.go`：`index.html` / `app.js` 是 go:embed 静态资源（无 ETag / Last-Modified 可校验），加 `Cache-Control: no-store`——否则升级二进制后浏览器可能继续用旧缓存，表现为「新功能不出现」需手动强刷 |
 
 ## 架构总览
 
@@ -264,9 +276,9 @@ CI 会自动构建多架构镜像（`amd64` / `arm64`）并发布到 GHCR，`git
 mkdir -p auths data && cp config.example.json config.json
 #    建议编辑 config.json 设置 api_key（或留空由程序自动生成随机密钥）
 
-# 2. 拉取并运行
+# 2. 拉取并运行（-p 默认只绑本机回环；需远程访问改为 -p 7863:7863 并务必设置 api_key）
 docker run -d --name workbuddy2api \
-  -p 7863:7863 -e TZ=Asia/Shanghai \
+  -p 127.0.0.1:7863:7863 -e TZ=Asia/Shanghai \
   -v ./auths:/app/auths -v ./data:/app/data -v ./config.json:/app/config.json \
   ghcr.io/moonkey0510/workbuddy_api:latest
 
@@ -301,6 +313,9 @@ curl -s http://localhost:7863/healthz
 
 启动后打开 **`http://localhost:7863/panel/`**，用面板「添加账号」完成登录（见下节）。
 
+> compose 默认只绑宿主机回环 `127.0.0.1:7863`（安全默认）：需从局域网 / 其他机器访问时，
+> 把 `docker-compose.yml` 的 ports 改为 `"7863:7863"`，并**务必**设置 `api_key`、建议前置 HTTPS 反代。
+
 常用运维命令：
 
 ```bash
@@ -315,7 +330,7 @@ docker compose down             # 停止并移除容器（数据在 ./auths 与 
 # 1) 下载 Release 中的 wb2api.exe，或从源码构建
 go build -trimpath -ldflags="-s -w" -o wb2api.exe ./cmd/server
 
-# 2) 直接运行：首次启动自动生成 config.json（含随机 api_key，日志打印一次）
+# 2) 直接运行：首次启动自动生成 config.json（含随机 api_key，记录在该文件里）
 .\wb2api.exe -config config.json
 
 # 3) 浏览器打开面板添加账号
@@ -393,6 +408,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 | `api_key` | 空 | 网关鉴权密钥；**空 = 不鉴权直接放行**（公网必须设置） |
 | `auth_dir` | `./auths` | 账号凭证目录 |
 | `state_file` | `./data/state.json` | 账号池状态持久化文件 |
+| `server.max_body_mb` | `128` | 聊天请求体上限（MB）：超限在读入前 / 读入中即 413（内存放大兜底）；`0` = 不限（完整读入转发，对齐上游旧行为）。属装配期字段，改后需重启 |
 | `cooldown.soft_rate` | `600s` | 软限流（429 / 限流文案）冷却基数；同一账号连续触发按 2 倍指数退避 |
 | `cooldown.soft_rate_max` | `2h` | 软冷却指数退避封顶 |
 | `schedule.checkin_hours` | `[9, 21]` | 每日本地时区整点签到 + 余额查询解冻。空数组 / `null` = 未配置回落默认（不是禁用） |
@@ -599,16 +615,17 @@ http://127.0.0.1:7863/panel/
 ```
 
 鉴权与 API 同口径：`api_key` 非空时面板要求输入一次密钥（浏览器 localStorage 记住）；为空则直接可用。
-界面支持**明暗主题切换**（首次跟随系统偏好，点击按钮两态翻转并记住选择），左侧导航分八个视图（概览 / 运营 / 系统三组）：
+界面支持**明暗主题切换**（首次跟随系统偏好，点击按钮两态翻转并记住选择），左侧导航分九个视图（概览 / 运营 / 系统三组）：
 
 | 视图 | 功能 |
 |---|---|
 | **账号池** | 统计条（总数/可用/冷却/禁用/可用积分合计/粘性会话）+ 账号表：状态标签（可用/限流冷却/积分冷却/熔断/已禁用）、积分量条、成功失败计数、在途、单号操作（签到/余额/任务/解冻/禁用/移除）；批量「全部签到」「旅行巡检」「活跃上报」「全部保活」。**顶部「添加账号」**弹窗含两个页签：浏览器登录（CN / Global 版本可选，设备授权 → 凭证落盘 → **热加载进池，免重启**；国际版登录后自动完成注册地区、激活与试用额度领取）与导入 JSON（账号数组批量导入） |
 | **用量** | 用量总览：按时间窗（24 小时 / 3 天 / 7 天 / 30 天 / 全部历史）聚合请求数、失败数、输入输出 token、缓存命中与写入、思考 token、实扣积分、平均延迟与 TPS，并按域 / 账号 / 模型下钻 |
 | **调用记录** | 逐请求明细流水（时间 / 账号 / 域 / 模型 / 状态 / 耗时 / 输入 / 缓存命中 / 思考 / 输出 / 合计 / 积分），回答「刚才那次请求到底发生了什么」 |
-| **积分构成** | 账号对比：逐账号向上游实时查询积分包构成（按来源分组、剩余 / 总量、占比条、首发时间），跨账号横向对比 |
+| **积分构成** | **账号对比**：来源分组卡片（色点 + 名称 + 个数 + 剩余/总额 + 进度条），点组展开逐包明细（剩余/额度/到期时间）；点卡片标题可筛选下方列表 → **积分到期分布**：横向分段柱状图（灰轨道 = 本行额度合计，绿段 = 各包剩余占比——额度未动即占满、消耗越多灰缺口越大，剩余 0 的包不占位；悬停出信息卡；≤30 天逐天、更长并入「30+ 天」）→ **包明细**：专门逐包列表，**按需加载**（默认不渲染，选账号或点卡片标题后显示；「全部账号」按到期升序、单账号按面额降序，≤3 天到期标红 / ≤7 天标黄） |
 | **任务中心** | 见上文[任务中心](#-任务中心面板新视图)：全账号扫描、执行队列、开学季状态卡 |
 | **模型与档位** | 实时查询上游：每模型的积分倍率、默认思考档、支持的档位（含「off（可关）」）、上下文长度与最大输出；若存在探测数据，最大输出列显示**实测上限与钳制告警**（见「探测模型真实输出上限」） |
+| **Key 管理** | 托管 API 密钥：新建（弹窗先填名称再生成 → 返回明文可复制）/ 改名 / 停用 / 删除，带创建时间与「最近使用」；上限 50 枚。**主密钥**（`config.json → api_key`）继续负责面板登录与全部 API；托管密钥只授权 `/v1/*`、`/status`，**不能**登录面板——把发给客户端 / 同事的调用凭证与管理面解耦，单枚泄露时停用或删除它即可独立止损。存储见[安全与合规](#安全与合规) |
 | **配置** | 在线编辑 config.json：API 密钥、定时任务（签到 / 成长队列 / 旅行 / 活跃 / 保活时点与开关、余额刷新间隔）、账号池与流量治理参数、冷却、上游超时与 UA、提示词模式、脱敏 / 粘性开关 |
 | **运行日志** | 最近 500 行服务日志 + 请求表格日志（自动滚动开关），支持按「任务 / 对话 / 系统」频道筛选 |
 
@@ -622,13 +639,13 @@ http://127.0.0.1:7863/panel/
 `upstash.*`、`session_sticky.ttl` / `gc_interval`）保存后会提示"需重启进程生效"。配置写入采用「深合并且原子替换」：
 只更新面板表单覆盖的键，用户手写的未知键与其余字段原样保留。
 
-> 未进面板表单的键（`schedule.blackcat_hours` / `blackcat_enabled`、`global.*`、`pool.expiring_soon`）直接编辑
+> 未进面板表单的键（`schedule.blackcat_hours` / `blackcat_enabled`、`global.*`、`pool.expiring_soon`、`server.max_body_mb`）直接编辑
 > `config.json` 后重启进程生效；`upstream.user_agent` / `client_version` / `cli_version` / `client_name` /
 > `device_token*` 虽在表单内，但属装配期字段——保存会写盘，需重启才对运行中的进程生效。
 
 顶部「刷新」按钮 = 向上游全量查询真实余额并回写（5 秒自动轮询只读内存，不打上游）。
 
-面板后端接口挂在 `/panel/api/*`（同一 Bearer 鉴权），可脚本化调用；账号运维操作均落到池既有入口（`Revive`/`Disable`/`Remove` 等），与 `/status` 观测口径一致。
+面板后端接口挂在 `/panel/api/*`（同一 Bearer 鉴权，**只认主密钥**；含 Key 管理的 `GET/POST /panel/api/keys`、`POST /panel/api/keys/{id}/update`、`POST /panel/api/keys/{id}/remove`），可脚本化调用；账号运维操作均落到池既有入口（`Revive`/`Disable`/`Remove` 等），与 `/status` 观测口径一致。
 
 **安全响应头**：面板页面与全部 `/panel/api/*` 响应统一带 `Content-Security-Policy`（`default-src 'none'`，脚本仅同源，`frame-ancestors 'none'` 禁嵌套）、`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer` 等；前端脚本独立为同源 `app.js`，不含内联脚本与内联事件处理器。
 
@@ -640,12 +657,12 @@ http://127.0.0.1:7863/panel/
 
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
-| `POST /v1/chat/completions` | Bearer（`api_key` 非空时） | OpenAI 兼容补全；流式/非流式；请求体无网关侧上限（完整读入转发，超限交由上游如实返回） |
+| `POST /v1/chat/completions` | Bearer（`api_key` 非空时） | OpenAI 兼容补全；流式/非流式；请求体上限 `server.max_body_mb`（默认 128MB，超限 413；`0` = 不限，完整读入转发、超限交由上游如实返回） |
 | `GET /v1/models` | Bearer（`api_key` 非空时） | 模型列表（纯动态拉取，缓存 1h；失败返回空列表 + 5min 负缓存）；每模型带 `context_length`/`max_output_tokens`（四级查找链：上游目录 → 内置知识表 → model.json 缓存 → models.dev）、`reasoning_supported_efforts`/`reasoning_default_effort` 思考档位及描述/标签/倍率等全字段（上游有返回时） |
 | `GET /status` | Bearer（`api_key` 非空时） | 账号状态汇总 + 每账号详情（积分/冷却/熔断/在途/粘性） |
 | `GET /healthz` | 无 | 健康检查：有 healthy 且未占满账号返回 200，否则 503；响应带身份标识（见下） |
 
-> 鉴权规则：仅当 `api_key` 非空才校验 `Authorization: Bearer <api_key>`；**`api_key` 为空时上述端点直接放行**；`/healthz` 恒无鉴权。
+> 鉴权规则：`/v1/*` 与 `/status` 接受**主密钥**（`config.json → api_key`）或**任一启用的托管密钥**（面板「Key 管理」创建）；仅当 `api_key` 非空才校验 `Authorization: Bearer <key>`；**`api_key` 为空时上述端点直接放行**（此时托管密钥也不生效）；`/healthz` 恒无鉴权。面板 `/panel/api/*` 只认主密钥——托管密钥不能进入管理面。
 
 `/healthz` 响应示例（200 / 503 同结构，仅状态码与计数变化）：
 
@@ -779,7 +796,7 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 
 - 多账号复制 `auths/workbuddy-<uid>.json` 即可，池启动时自动对齐目录
 - Session 失效账号被禁用（`disabled_reason` 透出在 `/status`）后，可用 `./login.sh` 重新登录覆盖凭证；已持久化 `disabled=true` 的账号可在源码侧调用 `Pool.ReviveDisabled(uid)` 复活（`state.json` 中清除 `disabled` 标志）
-- 备份 = `auths/`（凭证）+ `data/state.json`（池状态：积分 / 冷却 / 计数）；配置 Upstash 后状态另镜像至 Redis（7 天 TTL）
+- 备份 = `auths/`（凭证）+ `data/state.json`（池状态：积分 / 冷却 / 计数）+ `data/api_keys.json`（托管 API 密钥）；配置 Upstash 后状态另镜像至 Redis（7 天 TTL）
 
 ## 安全与合规
 
@@ -792,10 +809,11 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 
 ### 2. 网络暴露与日志敏感度
 
-- 默认监听 `:7863`，compose 暴露 `0.0.0.0:7863`，**无内置 TLS**；公网部署必须设置 `api_key`，建议前置反代 / 内网
+- 默认监听 `:7863`（容器内全接口），compose **默认只绑宿主机回环 `127.0.0.1:7863`**（安全默认）；需远程访问时改为 `"7863:7863"` 并**必须**设置 `api_key`、建议前置反代 / 内网；**无内置 TLS**，公网部署必须置于 HTTPS 反代之后
 - 请求日志字段：序号 / 模型 / 模式 / 状态码 / **uid 前 8 位** / TTFB / token 数——**不含** `accessToken` / `refreshToken` / `api_key` 明文（不读取 `Authorization` 头）
 - 日志写 **stdout / stderr**（容器内进入 `docker logs`），代码无任何落盘日志文件
 - 面板「调用记录」为**纯内存环形缓冲**（最近 300 条，重启即清空），只存 uid / 昵称 / 域 / 模型 / 状态 / 耗时 / token 计数 / 积分，**不含凭证与请求内容**，也不落盘
+- **托管 API 密钥**（面板「Key 管理」）落在 `data/api_keys.json`（`0600`，明文——与 `auths/` 同口径：本机私有部署，面板需要「显示 / 复制」），面板列表默认掩码显示；校验走 SHA-256 摘要 + `subtle.ConstantTimeCompare` 常量时间比较；**停用 / 删除立即失效**。备份时按敏感文件对待
 
 ### 3. 发布来源与合规边界
 
@@ -824,10 +842,11 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 
 ### 多图会话请求体超限怎么办？
 
-网关**不再设请求体上限**（`server.max_body_mb` 已移除，对齐上游）：任意大小的请求体都会完整读入并转发上游，超限类问题由上游自然返回错误——其响应信息量更大（能看到上游的真实策略），网关不再以 413 提前拦截。
+网关默认对聊天请求体设 **128MB** 上限（`server.max_body_mb`）：超限在读入前 / 读入中即 **413** 拒绝，不把超大 body 完整读进内存——这是对「内存放大」的兜底（恶意 / 异常客户端用超大 body 打满内存），正常多图 / 长上下文会话远低于该值。
 
-- 多图/长上下文会话（历史图片每轮以 base64 重发，编码再膨胀约 37%）不会再撞网关侧 413
-- 若上游真的返回 413/超限错误，网关按既有错误分类链路如实透传（不打码、不罚号——超限是请求侧问题）
+- 确有更大的合法请求（历史图片每轮以 base64 重发，编码再膨胀约 37%）：把 `server.max_body_mb` 调大即可
+- **完全对齐上游**（任意大小完整读入转发，超限交由上游自然返回错误——此前的透传语义）：设 `server.max_body_mb: 0` 关闭本上限
+- 若上游返回 413/超限错误，网关按既有错误分类链路如实透传（不打码、不罚号——超限是请求侧问题）
 - 客户端中途断流导致的半截 body 在读入阶段即报 `400 invalid_request`，不会把截断 JSON 喂给上游（issue #41 语义保留在读错误路径）
 
 ### Docker 部署登录后报「写入 auths/…json.tmp 失败： permission denied」？
@@ -868,7 +887,7 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 | 断言 | 出处 |
 |---|---|
 | `prompt.mode` 默认 `passthrough` | `cmd/server/config.go`（`Default()`） |
-| 请求体无网关侧上限（max_body_mb 已移除） | `internal/server/handler.go`（chatCompletions 读 body 段） |
+| 请求体上限 `server.max_body_mb` 默认 128MB（0 = 不限） | `cmd/server/config.go`（`Default()`）；读取点 `internal/server/handler.go`（chatCompletions 读 body 段） |
 | 出站强制 `stream:true` | `internal/upstream/payload.go` |
 | DeepSeek 思维链注入（`thinking.type=enabled`） | `internal/upstream/thinking.go`（`injectThinking`） |
 | `reasoning_effort` 默认档兜底 = `high` | `internal/upstream/thinking.go`（`defaultDeepSeekEffort`） |

@@ -251,6 +251,28 @@ func TestPrepareBodyDefaultSanitizes(t *testing.T) {
 	}
 }
 
+// SanitizeEnabled 三态契约：未热改时回落装配期 SanitizeFingerprints 字段；
+// SetSanitizeFingerprints（面板运行期热改）后以热改值为准。出站路径经
+// SanitizeEnabled() 读取，配合 -race 守护并发安全（此前直接写字段为数据竞争）。
+func TestSanitizeEnabledHotOverride(t *testing.T) {
+	c := New()
+	if !c.SanitizeEnabled() {
+		t.Error("New() default should sanitize")
+	}
+	c.SanitizeFingerprints = false // 装配期字段：启动前直写仍被尊重
+	if c.SanitizeEnabled() {
+		t.Error("assembly-time field must be honored before hot override")
+	}
+	c.SetSanitizeFingerprints(true)
+	if !c.SanitizeEnabled() {
+		t.Error("hot override on must win over field")
+	}
+	c.SetSanitizeFingerprints(false)
+	if c.SanitizeEnabled() {
+		t.Error("hot override off must win over field")
+	}
+}
+
 // 出站边界集成：ChatStream 发往上游的 wire body 必须无残留指纹。
 func TestChatStreamWireBodySanitized(t *testing.T) {
 	var gotBody []byte

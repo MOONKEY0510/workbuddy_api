@@ -19,6 +19,7 @@ import (
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/calls"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/keys"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/panel"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
@@ -57,8 +58,10 @@ func main() {
 		if errors.Is(err, fs.ErrNotExist) {
 			// 首次运行：目录下没有配置 → 自动落一份推荐配置（含随机 api_key）再加载。
 			// 双击 exe / 裸跑 docker 即开，无需先手工复制样例。
-			if key, werr := WriteDefault(*cfgPath); werr == nil {
-				log.Printf("config %s 不存在，已生成推荐配置（api_key=%s，记录在该文件里，可自行修改）", *cfgPath, key)
+			if _, werr := WriteDefault(*cfgPath); werr == nil {
+				// 不回显 api_key：日志会被 docker logs / 终端历史持久化（README 承诺
+				// 日志不含密钥明文），密钥只留在配置文件（0600）里。
+				log.Printf("config %s 不存在，已生成推荐配置（含随机 api_key，记录在该文件里，可自行修改）", *cfgPath)
 				cfg, err = Load(*cfgPath)
 			}
 			if err != nil {
@@ -179,6 +182,11 @@ func main() {
 		BlackcatDisabled:   !cfg.Schedule.BlackcatEnabled,
 		GrowthDisabled:     !cfg.Schedule.GrowthEnabled,
 	})
+	if cfg.Server.MaxBodyMB > 0 {
+		log.Printf("请求体上限：%d MB（server.max_body_mb；超限 413，0 = 不限）", cfg.Server.MaxBodyMB)
+	} else {
+		log.Printf("请求体上限：不限制（server.max_body_mb=0，完整读入转发）")
+	}
 	switch {
 	case !cfg.Schedule.CheckinEnabled:
 		log.Printf("签到已禁用（schedule.checkin_enabled=false）")
@@ -234,10 +242,18 @@ func main() {
 	// 逐请求明细流水：面板「调用记录」视图用，纯内存环形缓冲（最近 300 次）。
 	callRing := calls.NewRing(300)
 
+	// 托管 API 密钥库（面板「Key 管理」）：与 state.json 同目录的 api_keys.json。
+	// 与主密钥（config.api_key）的分工：主密钥 = 面板登录 + 全部 API；托管密钥只用于
+	// 调用 /v1/*、/status，可在面板逐枚停用 / 删除——发给客户端的凭证与该管理面解耦。
+	keystore := keys.New(stateSibling(cfg.StateFile, "api_keys.json"))
+	defer keystore.Flush() // 退出前补一次落盘（含防抖中的「最近使用」）
+	log.Printf("[keys] 托管 API 密钥 %s", keystore.Describe())
+
 	pn := panel.New(panel.Config{
 		Pool:        p,
 		Usage:       rec,
 		Calls:       callRing,
+		Keys:        keystore,
 		Upstream:    up,
 		Scheduler:   sch,
 		AuthDir:     cfg.AuthDir,
@@ -275,8 +291,11 @@ func main() {
 		Live:         live,
 		Usage:        rec,
 		Calls:        callRing,
+		Keys:         keystore,
 		PromptMode:   cfg.Prompt.Mode,
 		PromptText:   cfg.PromptText,
+		// 请求体上限（server.max_body_mb，缺省 128MB；0 = 不限）：超限读入前/读入中 413。
+		MaxBodyMB: cfg.Server.MaxBodyMB,
 		// handler 侧第三道闸（global realm）：false（显式逃生门）时不列 global: 模型名。
 		GlobalEnabled: cfg.Global.Enabled,
 	})
@@ -291,8 +310,8 @@ func main() {
 		Handler:           h,
 		ReadHeaderTimeout: 30 * time.Second,
 		// ReadTimeout 覆盖整个请求读取（含 body）：防慢速 body 拖死连接。
-		// 请求体已无网关侧上限（max_body_mb 移除），60s 按常规带宽的数十 MB
-		// 上传余量取值；超大 body 慢速上传若超时，由客户端重试。
+		// 请求体默认上限 server.max_body_mb=128MB（0=不限），60s 覆盖该量级的
+		// 上传耗时；超大 body 慢速上传若超时，由客户端重试。
 		ReadTimeout: 60 * time.Second,
 		// IdleTimeout keep-alive 空闲连接回收：配合 chat 出站 ctx 传播防连接泄漏堆积。
 		// 注意：SSE 流式响应期间连接非空闲，不受此项掐断；不设全局 WriteTimeout
@@ -403,7 +422,9 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 		SoftCooldown:         newCfg.SoftRateDur,
 		SanitizeFingerprints: newCfg.Features.SanitizeBlacklistFingerprints,
 	})
-	up.SanitizeFingerprints = newCfg.Features.SanitizeBlacklistFingerprints
+	// 运行期热改必须走 SetSanitizeFingerprints（互斥保护）：直接写字段会与
+	// 并发的出站请求读取构成数据竞争。
+	up.SetSanitizeFingerprints(newCfg.Features.SanitizeBlacklistFingerprints)
 	p.SetBreaker(newCfg.Pool.BreakerThreshold, newCfg.BreakerCooldownDur, newCfg.BreakerCooldownMaxD)
 	p.SetMaxInFlight(newCfg.Pool.MaxInFlight)
 	p.SetMaxInFlightGlobal(newCfg.Pool.MaxInFlightGlobal)
@@ -438,6 +459,7 @@ func restartRequiredFields(c *Config) []string {
 		out = append(out, "state_file")
 	}
 	out = append(out, "upstream.timeout_seconds", "upstream.header_timeout_seconds", "upstream.idle_timeout_seconds")
+	out = append(out, "server.max_body_mb") // handler 装配期捕获，改后需重启
 	if c.Upstash.URL != "" || c.Upstash.Token != "" {
 		out = append(out, "upstash")
 	}

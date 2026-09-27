@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/keys"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/redisstore"
@@ -111,9 +113,9 @@ func testPoolWith(auths ...*auth.Auth) *pool.Pool {
 	return p
 }
 
-// TestChatLargeBodyNoGatewayLimit 请求体无网关侧上限（max_body_mb 已移除）：
-// 数 MB 的合法 body 完整读入并照常打上游，网关不再 413（超限类问题交由上游
-// 自然响应，对齐上游 e34cfa4 规约）。
+// TestChatLargeBodyNoGatewayLimit 请求体上限为 0（不限）时：数 MB 的合法 body
+// 完整读入并照常打上游（server.max_body_mb=0 恢复"对齐上游"的透传语义，超限类
+// 问题交由上游自然响应）。零值 = 不限，故未注入上限的 Handler 也是该行为。
 func TestChatLargeBodyNoGatewayLimit(t *testing.T) {
 	var calls int
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
@@ -132,6 +134,94 @@ func TestChatLargeBodyNoGatewayLimit(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("upstream calls=%d want 1", calls)
+	}
+}
+
+// TestChatBodyLimit413 请求体超限（server.max_body_mb）：超限在读入前
+// （Content-Length 可判）/读入中即 413，请求不触达上游（内存放大兜底）；
+// 恰好等于上限的合法 body 不拒（边界只拒"超过"）。
+func TestChatBodyLimit413(t *testing.T) {
+	var calls int
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		calls++
+		return 200, sseOK, true
+	})
+	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
+	h := NewHandler(Config{Pool: p, Upstream: up, MaxBodyMB: 1})
+
+	// 2MB > 1MB 上限：Content-Length 预判即 413，不读 body。
+	pad := strings.Repeat("a", 2<<20)
+	body := []byte(`{"model":"glm-5.2","messages":[],"pad":"` + pad + `"}`)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body)))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("code=%d want 413 body=%s", rec.Code, rec.Body)
+	}
+	if calls != 0 {
+		t.Errorf("upstream calls=%d want 0 (oversized body must not reach upstream)", calls)
+	}
+
+	// 恰好 1MB 的合法 body：不拒（照常打上游）。
+	const oneMB = 1 << 20
+	prefix := `{"model":"glm-5.2","messages":[],"pad":"`
+	suffix := `"}`
+	exact := []byte(prefix + strings.Repeat("a", oneMB-len(prefix)-len(suffix)) + suffix)
+	if len(exact) != oneMB {
+		t.Fatalf("fixture len=%d want %d", len(exact), oneMB)
+	}
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(exact)))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("body at exact limit must pass: code=%d body=%s", rec2.Code, rec2.Body)
+	}
+}
+
+// TestManagedKeyAuthorizesAPI 托管密钥（面板「Key 管理」创建）可授权 API 面
+// （/v1/*、/status），且停用后立即失效；主密钥仍照常可用。
+// 注意权限边界：托管密钥**不能**进面板管理面（见 panel 包
+// TestManagedKeyCannotAccessPanel）。
+func TestManagedKeyAuthorizesAPI(t *testing.T) {
+	ks := keys.New(filepath.Join(t.TempDir(), "api_keys.json"))
+	k, err := ks.Create("client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) { return 200, sseOK, true })
+	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
+	h := NewHandler(Config{Pool: p, Upstream: up, APIKey: "master", Keys: ks})
+
+	status := func(token string) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/status", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := status(""); code != http.StatusUnauthorized {
+		t.Errorf("no key: code=%d want 401", code)
+	}
+	if code := status("master"); code != http.StatusOK {
+		t.Errorf("master key: code=%d want 200", code)
+	}
+	if code := status(k.Value); code != http.StatusOK {
+		t.Errorf("managed key: code=%d want 200", code)
+	}
+	if code := status("sk-not-a-key"); code != http.StatusUnauthorized {
+		t.Errorf("unknown key: code=%d want 401", code)
+	}
+
+	// 停用 → 立即失效
+	if _, ok := ks.Update(k.ID, k.Name, false); !ok {
+		t.Fatal("disable failed")
+	}
+	if code := status(k.Value); code != http.StatusUnauthorized {
+		t.Errorf("disabled managed key: code=%d want 401", code)
+	}
+	// 主密钥不受托管密钥状态影响
+	if code := status("master"); code != http.StatusOK {
+		t.Errorf("master key after disable: code=%d want 200", code)
 	}
 }
 

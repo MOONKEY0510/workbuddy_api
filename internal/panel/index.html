@@ -237,7 +237,10 @@ button.primary {
   background: var(--grad); border-color: transparent; color: var(--accent-ink); font-weight: 550;
   box-shadow: 0 6px 16px -11px var(--accent-line);
 }
-button.primary:hover:not(:disabled) { filter: brightness(1.07); border-color: transparent; }
+/* hover 必须显式保住渐变：通用 button:hover 规则的纯色背景特异性 (0,2,1)
+   高于 button.primary 的 (0,1,1)，不写回渐变的话悬停会被换成 surface-3
+   （浅色主题下近白）→ 白底白字，整颗按钮"变白"。 */
+button.primary:hover:not(:disabled) { background: var(--grad); filter: brightness(1.07); border-color: transparent; }
 button.ghost { background: transparent; }
 button.ghost:hover:not(:disabled) { background: var(--surface-2); }
 button.danger { color: var(--bad); }
@@ -477,6 +480,10 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
 .dlg {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
   width: 560px; max-width: 100%; max-height: 86vh; display: flex; flex-direction: column;
+  /* overflow:hidden 必须有：footer/header 带自己的背景色（surface-2），不裁剪的话
+     方角会从 .dlg 的圆角外露出来（弹窗底部两角出现"尖角"）。内部滚动在 .body
+     自己的 overflow:auto 上，不受影响。 */
+  overflow: hidden;
   box-shadow: var(--shadow-lg); animation: dlgIn .22s cubic-bezier(.2,.8,.3,1);
 }
 @keyframes dlgIn { from { opacity: 0; transform: translateY(12px) scale(.985); } to { opacity: 1; transform: none; } }
@@ -486,6 +493,12 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
 .dlg .body { padding: 18px 20px; overflow: auto; }
 .dlg footer { padding: 13px 20px; border-top: 1px solid var(--line-soft); display: flex; gap: 10px; background: var(--surface-2); }
 .dlg footer .grow { flex: 1; }
+/* 弹窗标题图标徽章（小弹窗用：图标 + 标题一行，视觉锚点） */
+.dlg header h3.dlg-tt { align-items: center; gap: 9px; }
+.dlg-ico { width: 30px; height: 30px; border-radius: 9px; flex: none; display: inline-flex;
+  align-items: center; justify-content: center; background: var(--accent-soft);
+  color: var(--accent); border: 1px solid var(--accent-line); }
+.dlg-ico svg { width: 15px; height: 15px; }
 .dlg .tabs { display: inline-flex; gap: 2px; background: var(--surface-3); border-radius: var(--r-sm); padding: 3px; margin-left: 10px; vertical-align: middle; }
 .dlg .tabs .tab { padding: 4px 14px; border-radius: var(--r-xs); border: none; background: transparent; color: var(--ink-3); font: 550 12.5px var(--sans); cursor: pointer; transition: color .14s; }
 .dlg .tabs .tab:hover:not(:disabled) { color: var(--ink); background: transparent; }
@@ -497,6 +510,40 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
   margin: 8px 0 12px; user-select: all;
 }
 .state { font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
+/* 自定义下拉（select 美化）：原生弹层是系统样式无法自定义（Windows Chrome 蓝色
+   高亮）。原生 select 视觉隐藏但保留（读写/change 事件全走它），渲染自定义
+   按钮 + fixed 定位弹层（.box 有 overflow:hidden，absolute 弹层会被裁掉）。 */
+.bsel { position: relative; display: inline-block; }
+.bsel-btn { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px;
+  font: inherit; color: var(--ink-2); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: var(--r-sm); cursor: pointer; }
+.bsel-btn.xs { padding: 4px 10px; font-size: 12.5px; border-radius: var(--r-xs); }
+.bsel-btn:hover, .bsel-btn.on { border-color: var(--accent-line); background: var(--surface-3); }
+.bsel-btn .cv { color: var(--ink); font-weight: 550; max-width: 240px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bsel-btn .ar { margin-left: auto; font-size: 10px; color: var(--ink-3); transition: transform .15s; }
+.bsel-btn.on .ar { transform: rotate(180deg); }
+.bsel-list { position: fixed; z-index: 70; display: none; padding: 4px;
+  background: var(--raise); border: 1px solid var(--line); border-radius: var(--r-sm);
+  box-shadow: var(--shadow); max-height: 264px; overflow: auto; }
+.bsel-list.on { display: block; animation: veilIn .12s ease; }
+.bsel-it { display: block; padding: 6px 11px; border-radius: var(--r-xs);
+  font-size: 12.5px; color: var(--ink-2); cursor: pointer; white-space: nowrap; }
+.bsel-it:hover { background: var(--surface-3); color: var(--ink); }
+.bsel-it.on { background: var(--accent-soft); color: var(--accent); font-weight: 550; }
+/* 文件拖放区（导入 JSON）：替代原生 file input 的「选择文件 未选择任何文件」 */
+.dropzone {
+  border: 1.5px dashed var(--line); border-radius: var(--r); padding: 20px 16px;
+  text-align: center; cursor: pointer; user-select: none; outline: none;
+  transition: border-color .15s, background .15s;
+}
+.dropzone:hover, .dropzone:focus-visible, .dropzone.drag { border-color: var(--accent-line); background: var(--accent-soft); }
+.dropzone.drag { border-style: solid; }
+.dropzone > svg { width: 22px; height: 22px; color: var(--ink-3); }
+.dropzone .dz-txt { font-size: 12.5px; color: var(--ink-2); margin-top: 6px; }
+.dropzone .dz-txt b { color: var(--accent); }
+.dropzone .dz-sub { font-size: 11.5px; color: var(--ink-3); margin-top: 3px; }
+.dropzone .dz-file { font: 550 12px var(--mono); color: var(--ok); margin-top: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .state.ok { color: var(--ok); } .state.err { color: var(--bad); }
 .dots::after { content: "…"; animation: blink 1.2s steps(4) infinite; }
 @keyframes blink { 0% { opacity: 1; } 50% { opacity: .3; } 100% { opacity: 1; } }
@@ -647,7 +694,7 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
 
   /* ── 积分构成 ───────────────────────────────────────────────── */
   .pk-grid { display: flex; flex-wrap: wrap; gap: 12px; }
-  .pk-card { flex: 1 1 220px; min-width: 200px; border: 1px solid var(--line-soft);
+  .pk-card { flex: 1 1 250px; min-width: 235px; border: 1px solid var(--line-soft);
     border-radius: var(--r); padding: 13px 15px; background: linear-gradient(180deg, var(--surface-2), var(--surface));
     transition: transform .16s, box-shadow .16s, border-color .16s; }
   .pk-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-sm); border-color: var(--accent-line); }
@@ -664,6 +711,62 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
     font-size: 11px; color: var(--ink-3); }
   .pk-legend span { display: flex; align-items: center; gap: 5px; }
   .pk-legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  /* 到期分布：横向分段柱状图（每段 = 一个包）。灰色轨道占满整行，
+     绿段按 该行到期总量 / 全局最大行 的比例填充，不留空白。 */
+  .pkx-row { display: flex; align-items: center; gap: 10px; padding: 3.5px 0; }
+  .pkx-row .lbl { flex: none; width: 60px; text-align: right; font: 550 12px var(--mono); color: var(--ink-2); }
+  .pkx-row .bar { flex: 1; display: flex; gap: 2px; height: 16px; min-width: 0;
+    /* max-width:none / margin:0 必须显式写：全局 .bar（账号池积分条）带
+       max-width:92px + margin-top:6px，不抵消的话轨道被钳成 92px 短条、
+       右侧大片空白（与 .us-wrapbar 的 v1.9.0 回归同一坑）。 */
+    max-width: none; margin: 0;
+    background: var(--surface-3); border-radius: 999px; padding: 3px; overflow: hidden; }
+  .pkx-row .bar i { display: block; height: 100%; border-radius: 3px; background: var(--ok); opacity: .9; transition: opacity .12s; }
+  .pkx-row .bar i:hover { opacity: 1; }
+  .pkx-row .val { flex: none; width: 92px; text-align: right; font: 600 12.5px var(--mono); font-variant-numeric: tabular-nums; }
+  /* 到期分布悬停卡（替代原生 title：跟随鼠标、信息完整、带剩余进度条） */
+  .pk-tip {
+    position: fixed; left: 0; top: 0; z-index: 55; pointer-events: none;
+    min-width: 218px; max-width: 340px; padding: 10px 13px;
+    background: var(--raise); border: 1px solid var(--line); border-radius: var(--r-sm);
+    box-shadow: var(--shadow); font-size: 12px; line-height: 1.7;
+    opacity: 0; transition: opacity .1s;
+  }
+  .pk-tip.on { opacity: 1; }
+  .pk-tip .nm { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pk-tip .t { color: var(--ink-3); font: 11px var(--mono); margin: 1px 0 6px; }
+  .pk-tip .r { display: flex; align-items: center; gap: 7px; white-space: nowrap; color: var(--ink-2); }
+  .pk-tip .r b { margin-left: auto; padding-left: 14px; color: var(--ink); font: 600 12px var(--mono); font-variant-numeric: tabular-nums; }
+  .pk-tip .pbar { height: 4px; border-radius: 999px; background: var(--surface-3); margin-top: 8px; overflow: hidden; }
+  .pk-tip .pbar i { display: block; height: 100%; border-radius: 999px; background: var(--ok); }
+  /* 卡片标题可点：在下方包明细表筛选该账号 */
+  .pk-card .who { cursor: pointer; }
+  .pk-card .who:hover .nm { color: var(--accent); }
+  /* 账号卡片内的来源组（点击展开逐包明细） */
+  .pk-grp { margin-top: 9px; border: 1px solid var(--line-soft); border-radius: var(--r-xs);
+    padding: 8px 10px; cursor: pointer; transition: border-color .14s; }
+  .pk-grp:hover { border-color: var(--accent-line); }
+  .pk-grp .hd { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  .pk-grp .hd > i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .pk-grp .hd .nm { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pk-grp .hd .cnt { color: var(--ink-3); flex: none; }
+  .pk-grp .hd .rv { margin-left: auto; font: 600 12px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pk-grp .hd .of, .pk-item .of { color: var(--ink-3); font-weight: 400; }
+  .pk-grp .pbar { height: 4px; border-radius: 999px; background: var(--surface-3); margin-top: 6px; overflow: hidden; }
+  .pk-grp .pbar i { display: block; height: 100%; border-radius: 999px; background: var(--ok); }
+  .pk-grp .pbar i.warn { background: var(--warn); }
+  .pk-grp .pbar i.bad { background: var(--bad); }
+  .pk-grp .items { margin-top: 7px; border-top: 1px dashed var(--line-soft); padding-top: 7px;
+    display: flex; flex-direction: column; gap: 6px; cursor: default; }
+  .pk-item { display: flex; align-items: baseline; gap: 8px; font-size: 11.5px; }
+  .pk-item .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
+  .pk-item .rv { font: 600 11.5px var(--mono); white-space: nowrap; }
+  .pk-item .exp { flex: none; color: var(--ink-3); font: 11px var(--mono); }
+
+/* ── Key 管理 ─────────────────────────────────────────────────────── */
+.keyval { font: 12.5px/1.35 var(--mono); word-break: break-all; user-select: all; color: var(--ink-2); }
+.keyval.masked { color: var(--ink-3); letter-spacing: .6px; }
+.keyval.fresh { background: var(--ok-soft); border-radius: var(--r-xs); padding: 3px 7px; }
 
 </style>
 </head>
@@ -704,6 +807,9 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 1.8 14 5v6L8 14.2 2 11V5z"/><path d="M2 5l6 3.2L14 5M8 8.2v6"/></svg>
         模型与档位</a></li>
       <li class="sep">系统</li>
+      <li><a href="#keys" data-view="keys">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="5.4" cy="8" r="2.4"/><path d="M7.8 8H14M11.7 8v2.3M9.5 8v1.6"/></svg>
+        Key 管理</a></li>
       <li><a href="#config" data-view="config">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg>
         配置</a></li>
@@ -851,7 +957,37 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
         </header>
         <div class="pad"><div class="pk-grid" id="pkSummary"></div></div>
       </div>
-      <div id="pkDetail"></div>
+      <div class="box">
+        <header>
+          <h3>积分到期分布</h3>
+          <span class="grow"></span>
+          <span class="note">剩余天数 · 可用积分（仅统计剩余 &gt; 0 的包；悬停看每段是哪个账号的哪个包）</span>
+        </header>
+        <div class="pad"><div id="pkExpiry"></div></div>
+      </div>
+      <div class="box" id="pkTableBox">
+        <header>
+          <h3>包明细</h3>
+          <span class="grow"></span>
+          <span class="note" id="pkTableNote">—</span>
+          <select id="pkAcct" class="xs"></select>
+        </header>
+        <div class="tbl-wrap">
+          <table class="acc">
+            <thead><tr>
+              <th class="mark" aria-hidden="true"></th>
+              <th>账号</th>
+              <th>包名 / 来源</th>
+              <th class="num">额度</th>
+              <th class="num">剩余</th>
+              <th class="num">已用</th>
+              <th class="num">发放</th>
+              <th class="num">到期</th>
+            </tr></thead>
+            <tbody id="pkTableBody"></tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
     <!-- 用量 -->
@@ -924,6 +1060,42 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
               <th class="num">输入</th><th class="num">缓存命中</th><th class="num">输出</th><th class="num">合计</th><th class="num">积分</th>
             </tr></thead>
             <tbody id="usRealmBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Key 管理 -->
+    <section class="view" id="view-keys" hidden>
+      <div class="box">
+        <header>
+          <h3>API 密钥</h3>
+          <span class="grow"></span>
+          <span class="note" id="keysNote">—</span>
+          <button class="primary xs" id="btnKeyCreate">新建密钥</button>
+          <button class="xs" id="btnKeysReload">刷新</button>
+        </header>
+        <div class="note-bar" id="keysWarn" hidden></div>
+        <div class="note-bar">面板登录用<strong>主密钥</strong>（config.json → <code>api_key</code>，在「配置」页维护）；此处创建的<strong>托管密钥</strong>只用于调用 <code>/v1/*</code> 与 <code>/status</code>，<strong>不能</strong>登录面板——发给客户端 / 同事的凭证与管理面解耦，单枚泄露时停用或删除它即可，主密钥与其他客户端不受影响。</div>
+      </div>
+      <div class="box">
+        <header>
+          <h3>密钥列表</h3>
+          <span class="grow"></span>
+          <span class="note">默认掩码显示，点「显示」展开完整密钥</span>
+        </header>
+        <div class="tbl-wrap">
+          <table class="acc">
+            <thead><tr>
+              <th class="mark" aria-hidden="true"></th>
+              <th>名称</th>
+              <th>密钥</th>
+              <th>状态</th>
+              <th>创建时间</th>
+              <th class="num">最近使用</th>
+              <th></th>
+            </tr></thead>
+            <tbody id="keysBody"></tbody>
           </table>
         </div>
       </div>
@@ -1195,10 +1367,16 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
       </div>
       <!-- 导入 JSON -->
       <div id="addTabImport" class="tab-panel" hidden>
-        <div class="hint" style="margin-bottom:8px">选择 cockpit tools 导出的 JSON 文件，批量导入账号。文件需为账号数组格式。</div>
-        <input type="file" id="importFile" accept=".json" style="margin-bottom:8px">
-        <div id="importDone" class="state ok" hidden></div>
-        <div id="importErr" class="state err" hidden></div>
+        <div class="hint" style="margin-bottom:10px">批量导入 cockpit tools 导出的账号（JSON 数组格式）：点击选择文件，或直接把文件拖进虚线框。</div>
+        <div class="dropzone" id="importDrop" tabindex="0" role="button" aria-label="选择或拖入 JSON 文件">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 10.6V2.9M5 5.3 8 2.4l3 2.9"/><path d="M2.5 10.6v2c0 .6.4 1 1 1h9c.6 0 1-.4 1-1v-2"/></svg>
+          <div class="dz-txt"><b>点击选择文件</b>，或将 JSON 拖到这里</div>
+          <div class="dz-sub">cockpit tools 导出的账号数组 · 单文件 ≤ 32 MB</div>
+          <div class="dz-file" id="importFileName" hidden></div>
+        </div>
+        <input type="file" id="importFile" accept=".json,application/json" hidden>
+        <div id="importDone" class="state ok" hidden style="margin-top:10px"></div>
+        <div id="importErr" class="state err" hidden style="margin-top:10px"></div>
       </div>
     </div>
     <footer>
@@ -1207,6 +1385,30 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
       <button id="btnCopyUrl" hidden>复制链接</button>
       <button id="btnOpenUrl" class="primary" hidden>在浏览器打开</button>
       <button id="btnCloseAdd">关闭</button>
+    </footer>
+  </div>
+</div>
+
+<!-- 新建 API 密钥（先填名称再生成：避免误点直接产出无法辨认的密钥） -->
+<div class="veil" id="keyNewVeil">
+  <div class="dlg" style="width:480px">
+    <header>
+      <h3 class="dlg-tt"><span class="dlg-ico" aria-hidden="true">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="5.4" cy="8" r="2.4"/><path d="M7.8 8H14M11.7 8v2.3M9.5 8v1.6"/></svg>
+      </span>新建 API 密钥</h3>
+      <div class="hint">给密钥起个名字，便于日后辨认与撤销（如「Claude Code」「家里电脑」「同事 A」）。名称创建后可随时修改。</div>
+    </header>
+    <div class="body">
+      <label class="fld" style="margin-bottom:0">
+        <span class="lb">名称</span>
+        <input id="keyNewName" maxlength="40" placeholder="例如：Claude Code" autocomplete="off">
+      </label>
+      <div class="state err" id="keyNewErr" hidden style="margin-top:10px"></div>
+    </div>
+    <footer>
+      <span class="grow"></span>
+      <button id="btnKeyNewCancel">取消</button>
+      <button id="btnKeyNewOk" class="primary">创建密钥</button>
     </footer>
   </div>
 </div>

@@ -23,6 +23,7 @@ import (
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/calls"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/httpauth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/keys"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
@@ -60,6 +61,10 @@ type Config struct {
 
 	// Calls 逐请求明细流水（nil = 调用记录接口返回空集）。与 Usage 同源，只读。
 	Calls *calls.Ring
+
+	// Keys 托管 API 密钥库（nil = 密钥管理接口返回 501）。面板只做增删改查；
+	// 密钥校验发生在 server 的出站鉴权路径（/v1/*、/status）。
+	Keys *keys.Store
 
 	// ProbeFile 模型输出上限探测结果文件（scripts/probe_max_tokens.py --panel-out
 	// 写入；空或文件不存在 = model_probes 端点返回空集，面板不显示任何实测标注）。
@@ -183,6 +188,12 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/model_probes", p.withAuth(p.modelProbes))
 	p.mux.HandleFunc("GET /panel/api/config", p.withAuth(p.getConfig))
 	p.mux.HandleFunc("POST /panel/api/config", p.withAuth(p.saveConfig))
+	// Key 管理（托管 API 密钥）：与其余面板接口同鉴权——只认主密钥，
+	// 托管密钥本身不能管理密钥（避免"调用凭证 → 管理面"的权限升级）。
+	p.mux.HandleFunc("GET /panel/api/keys", p.withAuth(p.keysList))
+	p.mux.HandleFunc("POST /panel/api/keys", p.withAuth(p.keysCreate))
+	p.mux.HandleFunc("POST /panel/api/keys/{id}/update", p.withAuth(p.keyUpdate))
+	p.mux.HandleFunc("POST /panel/api/keys/{id}/remove", p.withAuth(p.keyRemove))
 }
 
 // ServeHTTP 统一入口：先写安全响应头再分发，保证页面、静态资源、API

@@ -26,14 +26,24 @@ func VerifyBearer(r *http.Request, key string) bool {
 	if key == "" {
 		return true
 	}
-	authz := r.Header.Get("Authorization")
-	if !strings.HasPrefix(authz, bearerPrefix) {
+	tok := BearerToken(r)
+	if tok == "" {
 		// 缺头/方案不对：仍走一次摘要比较，保持耗时形状一致。
 		subtle.ConstantTimeCompare(digest(""), digest(key))
 		return false
 	}
-	tok := authz[len(bearerPrefix):]
 	return subtle.ConstantTimeCompare(digest(tok), digest(key)) == 1
+}
+
+// BearerToken 提取 `Authorization: Bearer <token>` 中的 token（前缀大小写敏感，
+// 与 VerifyBearer 同一解析口径）；缺头 / 方案不符返回空串。
+// 托管密钥（internal/keys）的校验复用本函数，避免两处各写一份解析规则。
+func BearerToken(r *http.Request) string {
+	authz := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authz, bearerPrefix) {
+		return ""
+	}
+	return authz[len(bearerPrefix):]
 }
 
 // digest 返回 s 的 SHA-256（定长 32 字节，供常量时间比较）。

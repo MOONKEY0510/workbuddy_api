@@ -622,7 +622,17 @@ type Client struct {
 	globalModels fetchGlobalModelsCache
 
 	// SanitizeFingerprints 出站请求体黑名单指纹脱敏开关（默认 true；false 完全还原）。
+	// 装配期字段：启动前（含测试）直接赋值；**运行期热改**（面板保存配置）必须走
+	// SetSanitizeFingerprints——出站路径统一经 SanitizeEnabled() 读取，避免并发读写竞争。
 	SanitizeFingerprints bool
+
+	// sanitizeMu 保护 sanitizeHot/sanitizeSet（运行期热改的脱敏开关快照）。
+	// 由来：面板「配置」页可在服务运行中改 features.sanitize_blacklist_fingerprints，
+	// 此前直接写 SanitizeFingerprints 字段、与并发的出站 prepareBody 读取构成数据竞争
+	// （go test -race 可复现）。装载后以热改值为准；未装载回落装配期字段。
+	sanitizeMu  sync.RWMutex
+	sanitizeSet bool
+	sanitizeHot bool
 
 	// UserAgent 出站 User-Agent 显式覆盖（非空时全路径生效，优先于默认三段式）。
 	// 空 = 默认官方形态：chat/refresh/FetchModels 走
@@ -767,8 +777,26 @@ func (c *Client) chatBase(a *auth.Auth) string {
 	return c.ChatBaseCN
 }
 
-// prepareBody 组装出站请求体（脱敏开关由 Client.SanitizeFingerprints 控制）。
-// prepareBody 组装出站请求体（脱敏开关由 Client.SanitizeFingerprints 控制）。
+// SetSanitizeFingerprints 运行期热改脱敏开关（并发安全；面板保存配置调用）。
+// 装载后出站路径以热改值为准；未装载时回落装配期 SanitizeFingerprints 字段。
+func (c *Client) SetSanitizeFingerprints(on bool) {
+	c.sanitizeMu.Lock()
+	c.sanitizeHot, c.sanitizeSet = on, true
+	c.sanitizeMu.Unlock()
+}
+
+// SanitizeEnabled 返回当前生效的出站脱敏开关（出站路径唯一读取点，并发安全）。
+func (c *Client) SanitizeEnabled() bool {
+	c.sanitizeMu.RLock()
+	defer c.sanitizeMu.RUnlock()
+	if c.sanitizeSet {
+		return c.sanitizeHot
+	}
+	return c.SanitizeFingerprints
+}
+
+// prepareBody 组装出站请求体（脱敏开关由 SanitizeEnabled() 读取——兼容装配期
+// 字段与运行期热改两种来源）。
 // realm 为账号 Realm()（cn/global），供 efforts 缓存分桶（跨域 effort 集合不互相污染）。
 func (c *Client) prepareBody(body []byte, realm, uid, conversationID string) []byte {
 	efforts, defs := c.effortsSnapshot(realm), c.defaultEffortsSnapshot(realm)
@@ -778,7 +806,7 @@ func (c *Client) prepareBody(body []byte, realm, uid, conversationID string) []b
 		//（issue #84：往 WorkBuddy 上游发 low/max 非法，须降级到 high）。
 		efforts, defs = globalEffortMap(efforts, defs)
 	}
-	body = PrepareBodyOptWithEffortsAndDefault(body, c.SanitizeFingerprints, efforts, defs)
+	body = PrepareBodyOptWithEffortsAndDefault(body, c.SanitizeEnabled(), efforts, defs)
 	// prompt_cache_key 注入（P0 费用优化，费用降 ~17×）：按账号隔离的稳定缓存键，
 	// 让同一客户端对同一账号的连续请求命中上游前缀缓存。
 	body = InjectPromptCacheKey(body, uid, conversationID)

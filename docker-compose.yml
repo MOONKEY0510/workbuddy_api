@@ -14,7 +14,10 @@ services:
     environment:
       - TZ=Asia/Shanghai
     ports:
-      - "7863:7863"
+      # 安全默认：只绑宿主机回环地址（远程访问需改为 "7863:7863" 或
+      # "0.0.0.0:7863:7863"，届时**必须**设置 api_key 并建议前置 HTTPS 反代——
+      # 服务自身只提供明文 HTTP，见 README「安全与合规」）。
+      - "127.0.0.1:7863:7863"
     volumes:
       - ./auths:/app/auths
       - ./data:/app/data
