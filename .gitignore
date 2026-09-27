@@ -1,0 +1,54 @@
+# 凭据与个人数据（绝不进版本库）
+auths/
+data/
+backups/
+*.key
+*.pem
+*.env
+.env
+.env.*
+
+# 真实配置（含 api_key / upstash token；模板见 config.example.json）
+config.json
+
+# 二进制（锚定仓库根目录——裸 "login"/"credit" 会连带忽略 cmd/login/、cmd/credit/ 源码）
+/login
+/credit
+/wb2api
+/signin_bin
+/trial
+/workbuddy2api
+*.exe
+
+# 构建产物与发布包
+/dist/
+*.zip
+*.tar
+*.tar.gz
+*.tmp
+__pycache__/
+scripts/__pycache__/
+
+# 运行日志与调试输出（可能含面板 api_key / 账号信息）
+*.log
+*.out
+*.err
+/chart_probe_out.txt
+/probe_out*.txt
+
+# IDE / 编辑器
+.idea/
+.vscode/
+.codebuddy/
+
+# 设计 / 计划 / 逆向工作文档（README.md 与源码内嵌提示词必须进版本库）
+*.md
+!README.md
+!internal/prompt/defaultprompt.md
+docs/
+LOOP.md
+PLAN.md
+SPEC.md
+
+# 本地验证工具（判据逆向过程脚本，结论沉淀于 data/desktop-task-protocol.md）
+/cmd/desktopverify*/

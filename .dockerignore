@@ -1,0 +1,30 @@
+auths/
+data/
+*.tmp
+.git/
+.gitignore
+docs/
+scripts/__pycache__/
+# 根目录已提交/未提交的二进制产物不进构建上下文（与 .gitignore 对齐）
+/login
+/credit
+/wb2api
+/signin_bin
+/workbuddy2api.exe
+*.exe
+# 运行日志 / 调试输出含面板 api_key / 账号信息，绝不进构建上下文
+*.log
+server.err.log
+server.out.log
+chart_probe_out.txt
+/trial
+*.tar
+*.tar.gz
+dist/
+.codebuddy/
+# 真实配置不进镜像（镜像默认用 config.example.json，生产以挂载卷覆盖）
+config.json
+PLAN.md
+SPEC.md
+LOOP.md
+README.md
