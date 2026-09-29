@@ -182,6 +182,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | **调用记录视图（新）** | 逐请求明细流水：每次上游尝试记一行——时间 / 账号 / 域 / 模型 / 状态 / 耗时 / 输入 / 缓存命中 / 思考 / 输出 / 合计 / 积分。新增 `internal/calls`（纯内存环形缓冲，最近 300 条）与 `GET /panel/api/calls`；装配与写入点：`cmd/server/main.go`、`internal/server/handler.go`（与用量统计同一汇聚点，成功与否都记）、`internal/pool/entry.go`（搬运缓存 / 思考 token 明细） |
 | **API 密钥管理（新）** | 侧边栏新增「Key 管理」视图，把「调用凭证」与「面板登录凭证」解耦。`internal/keys`（托管密钥库：`data/api_keys.json` 0600 原子落盘、常量时间校验、`last_used` 防抖落盘、上限 50 枚）+ `internal/panel/keys.go`（`GET/POST /panel/api/keys`、`/{id}/update`、`/{id}/remove`）+ 前端视图与 `internal/server/handler.go`（`authorize`：主密钥或任一启用托管密钥）。**权限边界**：托管密钥只授权 `/v1/*`、`/status`，面板管理面只认主密钥——避免「调用凭证 → 管理面」的权限升级 |
 | **`Dockerfile.cn`（受限网络构建版）** | 与原 Dockerfile 产物等价，仅构建期适配国内 / 受限网络：Go 模块走 `goproxy.cn`、Alpine 包走 USTC 镜像、省略 `# syntax` 指令避免额外拉取 `dockerfile` frontend 镜像、声明并透传 `HTTP_PROXY` 等 ARG 以便清空 Docker Desktop 注入的不可达代理。用法见文件头部注释 |
+| **多协议入口（新）** | 新增 `internal/convert`（Anthropic Messages / OpenAI Responses / Gemini generateContent ⇄ OpenAI Chat Completions 双向转换，含流式事件编码）与 `internal/server/protocol.go`（`/v1/messages`、`/v1/messages/count_tokens`、`/v1/responses`、`/v1beta/models/{model}:*` 四个入口 + 管道复用既有 `chatCompletions`）；`internal/httpauth` 新增 `VerifyToken` 供 `x-api-key` / `x-goog-api-key` / `?key=` 凭证位置兼容。既有 `/v1/chat/completions` 行为零改动 |
 
 ### 面板前端改造（`internal/panel/index.html` · `internal/panel/app.js`）
 
@@ -246,6 +247,7 @@ flowchart LR
 │   ├── pool/                         # 账号池：三因子选号 / 冷却 / 熔断 / 在途 / 粘性
 │   ├── scheduler/                    # 定时排程：签到 / 活跃 / 旅行 / 保活 / 夜猫子 / 成长队列
 │   ├── server/                       # OpenAI 兼容 HTTP 层：鉴权 / 改写 / SSE 重建 / 请求日志
+│   ├── convert/                      # 多协议适配：Anthropic Messages / Responses / Gemini ⇄ OpenAI 互转
 │   ├── upstream/                     # 上游客户端：chat · billing · growth · 任务判据事件链
 │   ├── panel/                        # Web 管理面板（index.html + app.js 经 go:embed 进二进制）
 │   ├── prompt/                       # 系统提示词：内置默认 + 降级中性提示词
@@ -658,6 +660,10 @@ http://127.0.0.1:7863/panel/
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
 | `POST /v1/chat/completions` | Bearer（`api_key` 非空时） | OpenAI 兼容补全；流式/非流式；请求体上限 `server.max_body_mb`（默认 128MB，超限 413；`0` = 不限，完整读入转发、超限交由上游如实返回） |
+| `POST /v1/messages` | `x-api-key` 或 Bearer | **Anthropic Messages 协议**（Claude Code / anthropic-sdk）：入站自动转 OpenAI 补全，响应按 Anthropic Message / 事件流回写 |
+| `POST /v1/messages/count_tokens` | `x-api-key` 或 Bearer | Anthropic 上下文预算探测（按字符数 /4 粗略估算，无真实分词） |
+| `POST /v1/responses` | Bearer | **OpenAI Responses 协议**（Codex CLI）：`instructions`/`input`/`tools` 转 OpenAI messages，响应按 `response.*` 事件流回写 |
+| `POST /v1beta/models/{model}:generateContent`<br>`POST /v1beta/models/{model}:streamGenerateContent` | `x-goog-api-key` / `?key=` / Bearer | **Gemini generateContent 协议**（Google SDK / Gemini CLI）；流式默认回 JSON 数组，带 `?alt=sse` 时回 SSE |
 | `GET /v1/models` | Bearer（`api_key` 非空时） | 模型列表（纯动态拉取，缓存 1h；失败返回空列表 + 5min 负缓存）；每模型带 `context_length`/`max_output_tokens`（四级查找链：上游目录 → 内置知识表 → model.json 缓存 → models.dev）、`reasoning_supported_efforts`/`reasoning_default_effort` 思考档位及描述/标签/倍率等全字段（上游有返回时） |
 | `GET /status` | Bearer（`api_key` 非空时） | 账号状态汇总 + 每账号详情（积分/冷却/熔断/在途/粘性） |
 | `GET /healthz` | 无 | 健康检查：有 healthy 且未占满账号返回 200，否则 503；响应带身份标识（见下） |
@@ -674,9 +680,47 @@ http://127.0.0.1:7863/panel/
 
 **宿主健康探测指引**：强校验（推荐）用 `/status` + `api_key`——只有持有正确 `api_key` 的本网关返回 200，其他服务返回 401 / 404；弱校验（不适合持 key 的负载均衡器）用 `/healthz` + `service` 字段判据（`/healthz` 恒无鉴权，`service == "workbuddy2api"` 才算命中本网关）。容器自带 `HEALTHCHECK` 用的就是弱校验（仅进程内自检，够用）。
 
+### 多协议入口（Anthropic / Codex Responses / Gemini）
+
+除原生 OpenAI 接口外，网关内置三个**入站协议适配端点**：客户端按自己协议的形状发请求，网关先转成 OpenAI `chat.completions` 请求体，复用同一条转发管线（选号 / 轮转 / 降级 / 提示词改写 / 用量观测全部生效），再把上游结果按原协议形状（含流式事件序列）回给客户端。转换实现在 `internal/convert`，入口在 `internal/server/protocol.go`。
+
+**客户端接入示例**
+
+```bash
+# Claude Code / anthropic-sdk：base_url 指向网关，模型名填网关支持的模型
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8080
+export ANTHROPIC_AUTH_TOKEN=<api_key>          # 走 Authorization: Bearer；也接受 x-api-key
+
+# Codex CLI：wire_api = "responses" 时 base_url 指向网关
+#   ~/.codex/config.toml → [model_providers.gw] base_url = "http://127.0.0.1:8080/v1"
+
+# Gemini SDK / Gemini CLI：base_url 指向网关
+curl "http://127.0.0.1:8080/v1beta/models/<model>:generateContent?key=<api_key>" \
+  -H 'Content-Type: application/json' \
+  -d '{"contents":[{"role":"user","parts":[{"text":"你好"}]}]}'
+```
+
+**转换要点**
+
+| 方向 | 映射 |
+|---|---|
+| Anthropic → OpenAI | `system` → system 消息；`tool_use` → `assistant.tool_calls`；`tool_result` → `tool` 消息（独立成条，保证配对）；`image`/base64 → `image_url` data URI；`input_schema` → function `parameters`；`tool_choice: any/tool` → `required`/指定函数；`thinking` 块 → `reasoning_content` |
+| Responses → OpenAI | `instructions` → system 消息；`input` item 里的 `message`/`function_call`/`function_call_output`/`reasoning` 依序还原为 messages（`function_call` 并入相邻 assistant）；扁平 `tools` → `tools[].function`；`reasoning.effort` → `reasoning_effort`；`max_output_tokens` → `max_tokens` |
+| Gemini → OpenAI | `systemInstruction` → system 消息；`contents.role: model` → assistant；`functionCall`/`functionResponse` 按 name↔生成的 call id 配对成 `tool_calls`/`tool` 消息；`inlineData`/`fileData` → `image_url`；`functionDeclarations` → tools（Schema 的 `type` 大写枚举归一为小写）；`functionCallingConfig.mode` → `tool_choice` |
+| 反向（响应/流式） | Anthropic：`message_start → content_block_* → message_delta → message_stop`，工具参数以 `input_json_delta` 分片，思维链为 `thinking` 块；Responses：`response.created → response.output_item/…_delta → response.completed`，含 `sequence_number` 递增与 function_call 的 `call_id`；Gemini：`candidates[].content.parts`（thought part 承载思维链，functionCall 参数收齐后发出），流式默认 JSON 数组、`alt=sse` 走 SSE |
+
+**已知边界**
+
+- 模型名**原样透传**：客户端需把模型名配置为网关支持的模型（可用 `cn:` / `global:` 前缀路由域；Gemini 从 URL 取模型名）。不认识的模型由上游如实报错。
+- Responses 的 `previous_response_id`（服务端会话续接）与 `store` **不支持**——网关无响应存储，请让客户端发送完整 `input`（Codex CLI 默认如此）。`text.format` 的 `json_schema` / `json_object` 会映射为 `response_format`。
+- Responses 的自定义工具类型（如 Codex 的 `apply_patch` custom tool）**无 Chat 等价物**，会被跳过（`shell` 等标准 function 工具正常）；`web_search` / `file_search` 等宿主工具同理。
+- Anthropic `thinking` 请求参数不转发（响应侧的 `reasoning_content` 仍会如实转成 `thinking` 块）；`count_tokens` 为字符数估算，非真实分词。
+- 多协议入口与 `/v1/chat/completions` 共用同一鉴权与请求体上限；鉴权失败按对应协议的错误信封返回（如 Anthropic 的 `{"type":"error","error":{...}}`）。
+
 ### 流式行为细节
 
 - 出站请求强制 `stream:true`；SSE 帧按 OpenAI 规范**白名单重建**（`reasoning_content` 保留、工具调用按 index 合并、未知字段剥离）
+- 多协议入口在 SSE 之外再叠一层协议编码：读上游 OpenAI 帧 → 转目标协议事件 → 实时 flush（客户端中断时同步终止上游读取）
 - 保证恰好一个 `data: [DONE]`（上游漏发时兜底补写）；空流先写一帧 `error` 再补 `[DONE]`
 - 非流式请求由本地聚合完整 SSE 流为单 `chat.completion` 响应（含 `reasoning_content` / `tool_calls`）
 
@@ -889,6 +933,8 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 | `prompt.mode` 默认 `passthrough` | `cmd/server/config.go`（`Default()`） |
 | 请求体上限 `server.max_body_mb` 默认 128MB（0 = 不限） | `cmd/server/config.go`（`Default()`）；读取点 `internal/server/handler.go`（chatCompletions 读 body 段） |
 | 出站强制 `stream:true` | `internal/upstream/payload.go` |
+| 多协议入口（Anthropic / Responses / Gemini）与 OpenAI 互转 | `internal/convert`（`AnthropicToOpenAI` / `ResponsesToOpenAI` / `GeminiToOpenAI` 与三个 `*Stream` 编码器）；路由与管道 `internal/server/protocol.go`（`runPipeline` / `relayOpenAIStream`）；注册点 `internal/server/handler.go`（`NewHandler`） |
+| 多协议鉴权凭证位置兼容（`x-api-key` / `x-goog-api-key` / `?key=`） | `internal/server/protocol.go`（`protoToken` / `withAuthAny`）、`internal/httpauth/httpauth.go`（`VerifyToken`） |
 | DeepSeek 思维链注入（`thinking.type=enabled`） | `internal/upstream/thinking.go`（`injectThinking`） |
 | `reasoning_effort` 默认档兜底 = `high` | `internal/upstream/thinking.go`（`defaultDeepSeekEffort`） |
 | `reasoning_content` 多轮回填（assistant 消息） | `internal/upstream/thinking.go` |

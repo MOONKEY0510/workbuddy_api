@@ -149,6 +149,15 @@ func NewHandler(cfg Config) *Handler {
 	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
+	// 多协议入口（见 protocol.go）：Anthropic Messages / OpenAI Responses / Gemini
+	// generateContent 三种入站协议自动转成 OpenAI 格式后复用 chatCompletions。
+	// 鉴权用 withAuthAny：凭证位置兼容 x-api-key（Anthropic）与
+	// x-goog-api-key / ?key=（Gemini），校验口径与 withAuth 完全一致。
+	h.mux.HandleFunc("POST /v1/messages", h.withAuthAny(h.messagesAnthropic))
+	h.mux.HandleFunc("POST /v1/messages/count_tokens", h.withAuthAny(h.countTokensAnthropic))
+	h.mux.HandleFunc("POST /v1/responses", h.withAuthAny(h.responsesCodex))
+	h.mux.HandleFunc("POST /v1beta/models/{model}", h.withAuthAny(h.geminiGenerate))
+	h.mux.HandleFunc("POST /v1/models/{model}", h.withAuthAny(h.geminiGenerate)) // Gemini v1 前缀
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
 	if cfg.Panel != nil {

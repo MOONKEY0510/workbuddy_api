@@ -23,16 +23,24 @@ const bearerPrefix = "Bearer "
 //   - 先摘要再比较，长度差异被吸收进摘要（不会因长度不同提前返回）；
 //   - 摘要本身不可逆，即便有侧信道也拿不到密钥原文。
 func VerifyBearer(r *http.Request, key string) bool {
+	return VerifyToken(key, BearerToken(r))
+}
+
+// VerifyToken 校验任意来源提取的 token 是否与 key 相等（常量时间）。
+// key 为空表示"未启用鉴权"，恒返回 true；token 为空时仍走一次摘要比较，
+// 保持耗时形状一致（不因"缺凭证"提前返回而泄露时序）。
+//
+// 供多协议入口复用：Anthropic 的 x-api-key、Gemini 的 x-goog-api-key / ?key=
+// 等凭证位置由调用方提取后统一在此比对，鉴权口径只有一份。
+func VerifyToken(key, token string) bool {
 	if key == "" {
 		return true
 	}
-	tok := BearerToken(r)
-	if tok == "" {
-		// 缺头/方案不对：仍走一次摘要比较，保持耗时形状一致。
+	if token == "" {
 		subtle.ConstantTimeCompare(digest(""), digest(key))
 		return false
 	}
-	return subtle.ConstantTimeCompare(digest(tok), digest(key)) == 1
+	return subtle.ConstantTimeCompare(digest(token), digest(key)) == 1
 }
 
 // BearerToken 提取 `Authorization: Bearer <token>` 中的 token（前缀大小写敏感，
