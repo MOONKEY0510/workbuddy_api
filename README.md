@@ -2,26 +2,37 @@
   <img src="https://raw.githubusercontent.com/DGZSbot/ai-icon/refs/heads/main/WorkBuddy.png" alt="WorkBuddy2API" width="120">
 </p>
 
-<h1 align="center">WorkBuddy2API Panel</h1>
+<h1 align="center">WorkBuddy2API Panel <sub><code>1.12.0-zhima</code></sub></h1>
 
 <p align="center">
   <b>把腾讯 CodeBuddy 账号变成 OpenAI 兼容 API 的多账号网关 · 附 Web 管理面板</b><br>
-  Web 面板 · OAuth 浏览器登录 · 账号池轮转 · 熔断与冷却 · 会话粘性 · 定时签到 / 活跃 / 旅行 / 保活 / 夜猫子 / 成长任务队列 · <b>成长任务一键完成（17/18）</b> · 流式 / 非流式
+  <b>多协议入口</b>（Anthropic Messages · OpenAI Responses · Gemini generateContent）· <b>调用记录</b>（分页 / 字段过滤 / 失败详情）· <b>API 密钥管理</b> · 模型级限流精确冷却 · 账号池轮转 · 熔断与冷却 · 会话粘性 · 定时签到 / 活跃 / 旅行 / 保活 / 成长任务队列 · <b>成长任务一键完成（17/18）</b> · 流式 / 非流式
 </p>
 
 <p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.12.0--zhima-2f81f7?style=flat-square">
   <img alt="Go" src="https://img.shields.io/badge/Go-1.22.5-00ADD8?logo=go&logoColor=white&style=flat-square">
   <img alt="API" src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square">
+  <img alt="Protocols" src="https://img.shields.io/badge/Protocols-OpenAI%20%7C%20Anthropic%20%7C%20Responses%20%7C%20Gemini-6E4AFF?style=flat-square">
   <img alt="Deploy" src="https://img.shields.io/badge/Deploy-Single_Binary%20%7C%20Docker-2496ED?style=flat-square">
   <img alt="Transport" src="https://img.shields.io/badge/Transport-SSE%20%2F%20Streaming-0DBD8B?style=flat-square">
 </p>
 
 ---
 
-> **本仓库是 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 的二开版本**，
-> 后者是 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) 的增强分支（Web 管理面板 + 积分任务体系）。
-> 本仓库的二开增量集中在**面板前端改造**与**若干缺陷修复**（新增「调用记录」视图、**「Key 管理」API 密钥管理**、用量视图与趋势图重写、界面细节调整），
-> 清单见 [本仓库的二开改动](#-本仓库的二开改动)；账号池调度、错误分类、提示词体系等内核逻辑保持增强分支原样。
+> **维护状态**：本项目自 `v1.12.0-zhima` 起**独立维护**（`1.11.x` 为上游基线时代），版本号随功能递增，`-zhima` 为项目标识后缀。
+> 基线来自 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel)（其本身是 [Sliverkiss/workbuddy2api](https://github.com/Sliverkiss/workbuddy2api) 的增强分支）。
+> 本项目在基线之上的二次开发见 **[本项目的二开特性](#-本项目的二开特性)**——多协议入口、调用记录、API 密钥管理、模型级限流精确冷却等，每一项都可在 `git log` 中逐项核对。
+
+## 目录
+
+| 上手 | 二开与功能 | 参考 | 边界 |
+|---|---|---|---|
+| [项目简介](#项目简介) | [**本项目的二开特性**](#-本项目的二开特性) | [配置说明](#配置说明) | [安全与合规](#安全与合规) |
+| [快速开始](#快速开始) | [成长任务一键完成（17/18）](#-成长任务一键完成1718) | [API 端点](#-api-端点) | [常见问题](#常见问题) |
+| [核心能力](#核心能力) | [核心行为语义](#核心行为语义) | [请求级日志](#请求级日志) | [关键断言 ↔ 代码出处](#关键断言--代码出处) |
+| [架构总览](#架构总览) | [定时任务](#定时任务) | [部署运维](#部署运维) | [免责声明](#免责声明) |
+| [仓库结构](#仓库结构) | [Web 管理面板](#-web-管理面板) | [与上游的差异](#-与上游的差异继承自增强分支) | [License](#license) |
 
 ## 项目简介
 
@@ -29,238 +40,9 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 
 - 官方不提供 OpenAI 形态的开放 API，本项目通过 **OAuth 设备授权**（面板「添加账号」或 `login.sh`）获取账号凭证，在网关侧做 token 自动刷新、账号池调度与流量治理；
 - 面向 **个人多账号** 场景：多账号共享、单号故障自动换号、冷却 / 熔断防止雪崩、会话粘性保证多轮上下文不跳号；
-- 对客户端只暴露 OpenAI 兼容接口，现有 SDK / 前端 / 工具 **零改造接入**。
+- 对客户端只暴露 OpenAI 兼容接口，现有 SDK / 前端 / 工具 **零改造接入**；并额外提供 **Anthropic Messages / OpenAI Responses / Gemini generateContent** 三个入站协议入口（详见[本项目的二开特性](#-本项目的二开特性)）。
 
 > ⚠️ 合规须知：本项目是**非官方**网关，使用 CodeBuddy 账号作为上游，**仅限本人授权账号、本机 / 私有环境测试**。详细边界见[安全与合规](#安全与合规)。
-
-## 核心能力
-
-| 能力 | 说明 |
-|---|---|
-| 🔑 **OAuth 一键登录** | `login.sh` 设备授权流程，自动落盘凭证并重启容器加载新账号 |
-| 🔄 **多账号池** | 三因子加权随机选号（积分占比 ×10 + 闲置补偿 + 成功率 ×3），Top-5 候选 + 防惊群 |
-| 🛡️ **熔断与冷却** | 429 软冷却 600s 起指数退避（封顶 `soft_rate_max`，**账号级**）、**模型级 6004 只锁「账号 × 模型」并精确冷到上游重置墙钟**（见[常见问题](#429-code6004模型级限流的冷却语义)）、404 固定 60s 短冷却、402 硬冷却至次日 04:00、连续失败熔断、在途租约限流 |
-| 🧲 **会话粘性** | 同一会话（`conversation_id`）尽量绑定同一账号，TTL 滚动续期，失败自动解绑，可镜像 Redis 防重启丢失 |
-| ⏰ **定时任务** | 六类独立排程、各有开关：签到（09/21 点，末尾自动跑**连登管家**：兑换已解锁档位 + 抽完抽奖次数）、活跃上报（10 点，点亮连登 / 解锁领养 + streak 自检）、猫猫旅行（09/21 点）、token 保活（22 点）、夜猫子补足（23 点，先查进度再决定是否补 glm-5.2 短对话）、成长任务队列（01 点，Sequential 族零点解锁后自动扫描执行） |
-| ⚡ **流式 + 非流式** | 出站强制 `stream:true`；SSE 帧按规范白名单重建；非流式由本地聚合为单响应 |
-| 🧠 **推理模型兼容** | DeepSeek 思维链注入（`thinking.type=enabled` + 默认档）、`reasoning_content` 多轮回填、effort 档位自动降级 |
-| 💬 **系统提示词体系** | 默认 `passthrough` 透传客户端 system（对齐上游）；可切 `custom`（网关自有提示词替换客户端 system）/ `append`（两者并用），从源头消灭 system 来源的内容误报；拦截时自动换 Degraded 中性提示词重试 |
-| 🗑️ **指纹脱敏** | 出站请求体黑名单指纹字段清洗（可关闭），与提示词体系两层叠加 |
-| 📊 **可观测** | 每请求一行表格日志（TTFB / token 速率 / uid）；`/healthz` 带 `service` 身份标识可接负载均衡 / 宿主探活 |
-| 💾 **状态持久化** | 池状态本地原子落盘 + Upstash Redis 异步镜像（可选），重启择新恢复 |
-| 🖥️ **Web 管理面板** | 内嵌单页面板（明暗主题），账号运维 / 模型档位查询 / 在线改配置（热生效）/ 运行日志 / 积分任务 / **API 密钥管理**，见 [Web 管理面板](#-web-管理面板) |
-
-## 🎯 成长任务一键完成（17/18）
-
-官方「成长计划」的 18 个成长任务中，**17 个可在面板上一键纯 API 完成**——无需安装官方客户端、无需人工交互，点一下「一键完成」即自动推进进度、等待异步计分落定并**自动领奖**。剩余任务展示操作指引。
-
-### 任务覆盖与奖励
-
-| 任务 | 奖励 | 一键完成方式 |
-|---|---|---|
-| `first_buddy` | +300c +8e | 解锁上报 → 同意协议 → 领养第一只 Buddy |
-| `create_canvas` | +300c +5e | 设计画布创建事件组（Ardot 遥测） |
-| `chat_5` | +100c | 对话活跃上报 ×5（自动补足差额） |
-| `Model_chat_GLM5.2` | +100c +5e | glm-5.2 真实对话一次（发一条短消息） |
-| `RichMeow_Chat` | +100c +5e +UR Buddy | 桌面端对话事件链（6 事件，含成功回执） |
-| `Buddy_App` | +100c +5e | Buddy 应用「发现→进入→授权」事件链 |
-| `Buddy_App_QQ` | +50c +5e | 企鹅教师助手进入事件链（与上一条共用） |
-| `automation_1` | +100c +5e | 定时任务创建成功事件 |
-| `Library_read` | +100c +5e | 资料库阅读点击（web 域上报） |
-| `template_5` | +100c +5e | 模板使用事件组 ×5 |
-| `playbook_prompt` | +100c +5e | 灵感案例「做同款」发送事件 |
-| `expert_5` | +100c +5e | 真实专家召唤+使用链 ×5（专家市场拉真实专家 → 真实对话 → 使用事件） |
-| `Expert_team_use_3` | +100c +5e | 专家团召唤+使用链 ×3 |
-| `Hp_Appearance` | +100c +5e | 主题设置 + 皮肤生效事件 |
-| `Expert_lighthouse` | +100c +5e | 轻量云专家召唤+使用链（真实对话 requestId，**可免费领一个月轻量服务器**） |
-| `skill_1` | +100c +5e | 真实对话 + 技能加载事件（skill_info） |
-
-**全新账号一键全做完 ≈ +1950 credits +78 能量**，其中仅数个任务涉及真实对话（`Model_chat_GLM5.2` 一条、`expert_5`/`Expert_team_use_3`/`skill_1` 各数条 fast-model 短对话），其余全部为行为事件上报，零对话消耗。
-
-### 不可自动的 1 个
-
-| 任务 | 原因 |
-|---|---|
-| `Expert_Philanthropy` | 需真实捐款（服务端领奖时校验捐赠回执，已实测无法绕过） |
-
-### 实现原理（简述）
-
-任务计分走 `/v2/report` 行为上报，但**不同任务认不同客户端指纹**：CLI 指纹（`www.codebuddy.cn`）、桌面指纹（`copilot.tencent.com` + `WorkBuddy/5.5.6` UA + `workbuddy-desktop` 事件族）、web 指纹（`www.workbuddy.cn` + `x-client-platform: web`）。网关为每类任务构造对应指纹的判据事件链（`internal/upstream/desktop.go`）；专家类任务额外要求真实专家 id 与真实对话回执（`internal/upstream/streak.go` 之外的 expert 序列）。上报 200 ≠ 计分——面板在执行后轮询任务进度，达标即自动调用 Web 域领奖接口。
-
-> ⚠️ 行为事件按天幂等：重复点「一键完成」不会重复扣资源，已达标的任务自动跳过。
-
-### 🧭 任务中心（面板新视图）
-
-「任务中心」视图把散落的任务能力收拢成一处：
-
-- **全账号任务扫描**：一键拉取每个账号的成长任务（未完成且可自动化的 19 项，含小程序口径的「校园日」与「小程序首对话」）+ 开学季待办，列表一目了然
-- **执行队列**：把待办按账号排队执行——账号内串行（与单任务/一键完成共用互斥锁），账号间可选并发（1-3）；执行进度实时更新到每个条目
-- **开学季独立状态卡**：每账号 5 任务（分享/桌面/对话×3/专家/学生认证）的状态矩阵 + 剩余抽奖次数，一键触发全账号闭环
-- **日志分频道**：运行日志按「任务 / 对话 / 系统」三个频道筛选——对话流量再大，任务结果也不会被冲掉；日志条目带频道徽标与时间
-
-### 🎒 开学季活动（5/5 全自动，活动期至 2026-09-24）
-
-官方「AI 好 Buddy，开学有好礼」小程序活动的 5 个任务**全部纯 API 自动完成**（挂签到排程末尾，幂等）：
-
-| 任务 | 奖励（每日） | 判据（已逆向） |
-|---|---|---|
-| 分享活动 | +100c +1抽奖 | `share-complete` 直调即点亮 |
-| 桌面端体验（单次） | +100c +1抽奖 | viewed 激活 + 真实 chat + 桌面六事件链 |
-| 和 AI 对话 3 次 | +50c +1抽奖 | viewed 后 3 条 `chat_request_send` 埋点（无需真实会话） |
-| 召唤开学季专家 | +50c +1抽奖 | viewed 后 mp 事件链（召唤×3 + 对话） |
-| 学生认证 | +100c | 需微信学生真实认证，不做 |
-
-抽奖次数自动全部抽完。期间逆向成果（cf-connect 加密通道、mp 云对话全链路）记录在 `data/desktop-task-protocol.md` §8。
-
-同一活动在成长任务中心还有两条**小程序口径**任务（`X-Client-Platform: miniprogram` 专属下发，默认列表不可见，各 +100c+5e）：
-
-| 任务 | 判据（已逆向） |
-|---|---|
-| `school_season` 校园日 | mini `chat_request_send` + `activityId=school_open_day_2026`（无 activityId 不点亮；accept/claim 均要求 mp 头） |
-| `Sequential_Tasks_1` 小程序首对话 | mini `chat_request_send`（无 activityId，服务端按 source=mini_program 指纹关联） |
-
-任务中心扫描自动合并 mp 口径待办；accept 带**登记回读验证**（上游存在 200+OK 但未落账的形态，未生效自动重试一次）。
-
-### 连登兑换与抽奖（自动）
-
-成长中心连登档位（连续登录 7/14/28 天）兑换后发放积分 / 能量 / 补签卡 / **抽奖次数**，抽奖次数只能从兑换获得。网关把它挂在每日签到排程末尾自动跑闭环（见[定时任务](#定时任务)）：档位解锁当天自动兑换、有抽奖次数自动抽完，全程无需人工盯。
-
-## 🆚 与上游的差异（继承自增强分支）
-
-本节记录的是本仓库所基于的增强分支 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 相对 [原始项目 master](https://github.com/Sliverkiss/workbuddy2api) 的增量（均已在真实多账号环境验证）——这些能力本仓库**继承并保留**；本仓库自己在其之上做的二次开发见 [本仓库的二开改动](#-本仓库的二开改动)。
-
-### 新增
-
-| 能力 | 说明 |
-|---|---|
-| **Web 管理面板** | `internal/panel`，前端 go:embed 单文件进二进制，零外部依赖。账号池可视化（健康色条 / 积分量条 / 冷却倒计时）、单号运维、批量任务、日志查看、明暗主题 |
-| **浏览器内 OAuth 添加账号** | 面板「添加账号」按钮完成设备授权 → 凭证落盘 → **热加载进池（免重启）**，替代命令行 `login.sh` 流程 |
-| **在线配置编辑（热生效）** | 面板直接改 `config.json`：API 密钥 / `soft_rate` / 脱敏开关 / 池参数 / 任务排程**立即生效**；装配期字段（listen 等）保存后提示需重启。写入采用深合并 + 原子替换，保留未知键 |
-| **积分任务体系** | 任务列表 / 接受 / 领取接口 + 面板弹窗；「一键完成」覆盖 **17 个任务**（对话 / 领养 / 桌面行为链 / 模板 / 灵感案例 / 画布 / 专家召唤 / 技能尝鲜 / 主题 / 资料库 / 夜猫子等），推进进度、等待异步计分落定后**自动领奖**，纯 API 零客户端依赖 |
-| **首启自动生成配置** | 目录下无 `config.json` 时自动生成推荐配置（含 `crypto/rand` 随机 `api_key`），双击即开 |
-| **粘性会话内容回退** | 客户端不发 `conversation_id` 时，用 `system + 首条 user` 哈希派生会话键（`d-` 前缀），通用 OpenAI 客户端也能享受粘性 |
-| **余额后台刷新** | `schedule.balance_refresh_minutes`（默认 5）周期查余额并更新池，冷却账号余额恢复自动解冻 |
-| **模型能力透出** | `/v1/models` 附带 `supported_efforts` / `default_effort` / 积分倍率 / 输入输出上限等上游真实字段 |
-| **安全加固** | 常量时间密钥比较（`internal/httpauth`）、CSP 与安全响应头、UID 白名单防路径穿越、前端属性转义修复 |
-| **领养前置修复** | 上游 `travelAdopt` 缺 report 前置导致领养恒失败于 `first_buddy task not completed yet`；本分支修正后实测 +300 到账（3/3 账号） |
-
-### 同步上游
-
-**第一轮（fork 基线 `53ee3a1` → `9a87758`，34 个提交）**：定时任务独立排程（当时四类：签到 / 旅行 / 活跃 / 保活）、pool 文件拆分、12153 连续计数才禁用、429 `code=6004` 模型级限流收窄、11101 不罚号、请求体 413、DeepSeek 思维链、reasoning_content 回填、Codex 指纹脱敏、系统提示词体系、出站 UA 可配等。
-
-**第二轮（`9a87758` → `ea8b1e5`，2026-09-14，只吸收底层）**：
-
-| 上游改动 | 吸收内容 |
-|---|---|
-| 净化增强 | `tool_calls.arguments` 盲区修复（content=null 的工具调用轮此前完全漏净化）、裸 `11128` 反探测改写、桌面版身份句（逗号形态）漏网修复、反馈句整句改写 |
-| 出站头族 | UA 对齐官方三段式 `WorkBuddy/<ver> WorkBuddy/<ver> CLI/<ver>`（默认 5.5.4/2.137.1，可配）；`X-IDE-*` 用量归属四头 + `X-Agent-Purpose`（`client_name` 配 `WorkBuddy` 即对齐官方桌面端）；`X-Device-Token` 设备风控头（auth 每号 / config / 文件三源）；`X-IDE-Version` 补齐 |
-| 并发修复 | 客户端 IP 改按请求参数传递（消除共享字段竞态）；billing 单段 UA 形态 |
-| 签到幂等 | `IsAlreadyCheckin` 识别"今天已签到"（code=10001/14001），调度日志不再把重复签到当失败 |
-| 粘性按模型判活 | 会话绑定的账号被 6004 模型级限额后，换模型请求自动解绑重分配（治"限额后换不动号"）；`/healthz` 探活计入模型豁免形态（治"全号被单模型限流探活误报 503"） |
-| report 增强 | `ReportChatActivity` 支持独立 `requestID`（同会话多轮上报各条可区分） |
-
-未吸收（明确不做）：脚本体系（task_runner/school 脚本—我们已有更完整的纯 API 实现）、governance/CI workflow、成本账本选号（依赖 usage.credit 观测，收益待验证）。
-
-### 未做 / 待办
-
-| 状态 | 事项 | 说明 |
-|---|---|---|
-| ✅ 已修复 | ~~single 类任务奖励领取~~ | **领奖已打通**：正确端点是 Web 域 `POST https://www.workbuddy.cn/activity/growth/tasks/<task_code>/claim`（任务码在路径、无 body、`x-client-platform: web`）。此前误用 CLI 域 `copilot.tencent.com/v2/.../reward/claim` 导致长期 400。「一键完成」现已**达标即自动领奖**（含异步计分等待），面板也可手动领取。实测 +100 分 +5 能到账、重复领取幂等 |
-| ✅ 已破解 | ~~桌面端 / 交互类任务~~ | 通过客户端指纹逆向（`/v2/report` 三通道 + 判据事件载荷），**17/18 任务可纯 API 一键完成**：`RichMeow_Chat`（桌面 6 事件链）、`Buddy_App(_QQ)`、`automation_1`、`Library_read`、`template_5`、`playbook_prompt`、`create_canvas`、`expert_5`、`Expert_team_use_3`、`Expert_lighthouse`、`Hp_Appearance`、`skill_1`、`black_cat`（夜间窗口自动补足）等，多账号实测点亮 |
-| ⚠️ 不支持 | **剩余 1 个任务** | `Expert_Philanthropy`（需真实捐款：服务端领奖时校验捐赠回执，已实测无法绕过）；面板展示指引 |
-| ❌ 未做 | **面板侧 Upstash / 凭证目录配置** | 涉及启动期装配，需手工编辑 `config.json`（面板会提示为重启项） |
-| ❌ 未做 | **HTTPS / 内置限流** | 设计上交给反向代理（Nginx / Caddy）。服务本身只提供明文 HTTP，公网部署**必须**置于 HTTPS 反代之后 |
-
-## 🔧 本仓库的二开改动
-
-本仓库（`MOONKEY0510/workbuddy_api`）基于 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 二次开发，改动集中在**面板前端**与**若干缺陷修复**；账号池、调度、上游协议、任务体系等内核逻辑未改动。以下每一项都可在本仓库 `git log` / 文件差异中核对。
-
-### 新增能力
-
-| 能力 | 说明与出处 |
-|---|---|
-| **调用记录视图（新）** | 逐请求明细流水：每次上游尝试记一行——时间 / 账号 / 域 / 模型 / 状态 / 耗时 / 输入 / 缓存命中 / 思考 / 输出 / 合计 / 积分。新增 `internal/calls`（纯内存环形缓冲，最近 300 条）与 `GET /panel/api/calls`；装配与写入点：`cmd/server/main.go`、`internal/server/handler.go`（与用量统计同一汇聚点，成功与否都记）、`internal/pool/entry.go`（搬运缓存 / 思考 token 明细） |
-| **调用记录：分页 + 字段过滤 + 失败详情（新）** | 过滤条支持「选择字段（账号 / 模型 / 域 / 状态码 / 失败分类 / 失败原因）+ 关键字」与「全部 / 只看失败 / 只看成功」快捷筛选，计数随筛选联动；底部分页条（总计 / 每页行数 20·30·50·100 / 页码，页数 >10 时中间折叠为省略号），过滤变化回到第 1 页、页码越界自动收敛到末页；失败行可点开**失败详情**（错误分类 + HTTP 状态 + 上游错误原文 + 账号 / 模型 / 完整时间 / 耗时）。后端侧 `calls.Entry` 新增 `status` / `kind` / `err` 三个字段并在 `recordAttempt` 的失败分支填充（分类取 `upstream.ErrKind` 词表，传输层错误记 `transport`），`calls.Add` 统一截断错误原文到 600 字节防体积失控；前端 `internal/panel/app.js`（`renderCalls` / `callsPageWindow` / `callsDetail`）纯本地分页、过滤与展开，展开态按 `seq` 在翻页与自动刷新后保持 |
-| **API 密钥管理（新）** | 侧边栏新增「Key 管理」视图，把「调用凭证」与「面板登录凭证」解耦。`internal/keys`（托管密钥库：`data/api_keys.json` 0600 原子落盘、常量时间校验、`last_used` 防抖落盘、上限 50 枚）+ `internal/panel/keys.go`（`GET/POST /panel/api/keys`、`/{id}/update`、`/{id}/remove`）+ 前端视图与 `internal/server/handler.go`（`authorize`：主密钥或任一启用托管密钥）。**权限边界**：托管密钥只授权 `/v1/*`、`/status`，面板管理面只认主密钥——避免「调用凭证 → 管理面」的权限升级 |
-| **`Dockerfile.cn`（受限网络构建版）** | 与原 Dockerfile 产物等价，仅构建期适配国内 / 受限网络：Go 模块走 `goproxy.cn`、Alpine 包走 USTC 镜像、省略 `# syntax` 指令避免额外拉取 `dockerfile` frontend 镜像、声明并透传 `HTTP_PROXY` 等 ARG 以便清空 Docker Desktop 注入的不可达代理。用法见文件头部注释 |
-| **多协议入口（新）** | 新增 `internal/convert`（Anthropic Messages / OpenAI Responses / Gemini generateContent ⇄ OpenAI Chat Completions 双向转换，含流式事件编码）与 `internal/server/protocol.go`（`/v1/messages`、`/v1/messages/count_tokens`、`/v1/responses`、`/v1beta/models/{model}:*` 四个入口 + 管道复用既有 `chatCompletions`）；`internal/httpauth` 新增 `VerifyToken` 供 `x-api-key` / `x-goog-api-key` / `?key=` 凭证位置兼容。既有 `/v1/chat/completions` 行为零改动 |
-| **模型级限流：精确冷却 + 可视化（新）** | 6004（模型级用量限流）只停「该账号 × 该模型」：冷却截止**直接采信上游「将在 … 重置」墙钟**，不再被账号级 `soft_rate_max` 截断——6004 的重置窗口常达数小时，截断会提前解冻、解冻即再撞 429（实测：01:33 撞限、上游说 03:46 重置，旧逻辑冷到 03:33）。新增 `cooldown.model_rate_max` 可选封顶（默认空 = **不封顶**，面板可改、热生效）。6004 判定**前置**：即使文案缺失/变体也只做模型级有界退避，账号级状态一律不动。该模型全池无号可用时回 **429 + 原因说明**（受限号数 / 最早恢复时刻 / 建议换模型），不再笼统 503。面板账号池新增「模型限流 ×N」标签与**逐行明细**（模型名 + 恢复时刻，多模型同时限额各占一行，>3 折叠，悬停见完整台账）。落点：`internal/pool/cooldown.go`（`CooldownSoftForModel` / `cappedModelUntilLocked` / `ModelBlockSummary`）、`internal/server/handler.go`（`applyErrorPolicy` / 选号失败归因）、`internal/panel/app.js`（`rlmRows` / `hmClock`） |
-
-### 面板前端改造（`internal/panel/index.html` · `internal/panel/app.js`）
-
-| 改动 | 说明 |
-|---|---|
-| **「用量」视图新增缓存 / 思考 / 积分维度** | 从上游 usage 解析并聚合**缓存命中**、**缓存写入**、**思考 token** 与**实际扣除积分**（`usage.credit`）；流式（SSE 末帧）与非流式（聚合响应）两条路径都接，OpenAI 口径 `prompt_tokens_details.cached_tokens`、`completion_tokens_details.reasoning_tokens` 优先，Anthropic 口径 `cache_read_input_tokens`、`cache_creation_input_tokens` 兜底；前端新增缓存构成明细卡（命中 / 写入 / 未命中 + 占比条），各明细表的列头补「缓存命中」「积分」 |
-| **用量趋势图自绘重写** | 纯 SVG 面积 + 折线（不引第三方图表库）：y 轴按「好看的刻度」（1/2/5 × 10ⁿ）取整、渐变填充、跨天分隔线、数据点、悬停十字线与浮动卡片、x 轴按真实时间取点、单点居中不贴边、宽度自适应容器 |
-| **导航与可读性** | 侧栏新增「调用记录」（概览 / 运营 / 系统三组）并接入自动刷新；表头 / 图例中文化（Prompt / Completion → 输入 / 输出）；缓存命中列显示「命中量 + 占输入百分比」；积分单独格式化（小值保精度、大值 k / m 缩写）与千分位整数；账号池「可用 / 总额」积分弱化排版 |
-| **「积分构成」视图重做** | **账号对比**：来源分组卡片（色点 + 名称 + 个数 + 剩余/总额 + 进度条），点击组展开逐包明细（剩余/额度/到期时间）；点卡片标题在下方列表筛选该账号 → **积分到期分布**：横向分段柱状图（灰轨道 = 本行额度合计，绿段 = 各包剩余 / 本行额度——额度未动即占满、消耗越多灰缺口越大，剩余 0 的包不占位；≤30 天逐天、更长并入「30+ 天」）→ **包明细**：专门逐包列表，**按需加载**（默认不渲染，选账号或点卡片标题后显示；「全部账号」按到期升序、单账号按面额降序，≤3 天到期标红 / ≤7 天标黄）。轨道悬停为自定义信息卡（替代原生 `title`） |
-| **Key 管理交互与弹窗** | 新建密钥改为**弹窗先填名称再生成**（空值拦截、Enter 创建 / Esc 取消；避免误点直接产出「未命名」密钥）；弹窗标题加图标徽章、按钮全尺寸；列表支持掩码显示 / 复制 / 改名 / 停用 / 删除，停用与删除立即失效 |
-| **导入 JSON 拖放区** | 原生 `<input type=file>`（「选择文件 未选择任何文件」）替换为虚线拖放区：点击选择 / 拖拽文件 / 键盘（Enter / 空格）三入口统一到 `doImport(file)`；显示已选文件名与大小，非 `.json` 前端直接拒绝 |
-| **自定义下拉组件** | 原生 `<select>` 弹层是系统样式（Windows Chrome 蓝色高亮）无法自定义：视觉隐藏原生 select（读写与 `change` 事件全保留，业务代码零改动），渲染自定义按钮 + `fixed` 定位弹层（`.box` 有 `overflow:hidden`，absolute 弹层会被裁掉；底部空间不足自动向上弹）。覆盖用量时间窗口 / 任务中心并发 / 包明细账号筛选 |
-| **界面细节** | 「模型能力」标题里夹带的开发者备注改为正式提示条；toast 淡出过渡、统计卡布局等样式梳理 |
-
-### 缺陷修复
-
-| 修复 | 说明与出处 |
-|---|---|
-| **批量导入账号整批失败** | `internal/panel/import.go`：导入前确保 `auth_dir` 存在——目录缺失时此前整批账号都会卡在 `SaveAtomic` 写入失败（登录路径早已有该兜底，导入路径缺失） |
-| **导入跳过原因查无实据** | `internal/panel/import.go` + `app.js`：跳过原因改为写入服务端日志，前端导入结果里也直接显示前 3 条——此前只回传前端、前端仅 `console.warn`，「成功 0 个、跳过 N 个」在服务端日志里完全无迹可循 |
-| **用量统计缺积分与缓存口径** | `internal/server/logging.go`（SSE 与聚合响应两条解析路径）、`internal/usage/usage.go`（分桶 / 折叠 / 聚合字段 `credits` · `cached_tokens` · `cache_write_tokens` · `reasoning_tokens`）、`internal/server/handler.go`（汇聚点写入） |
-| **启动日志回显 api_key** | `cmd/server/main.go`：首次自动生成配置时密钥明文进日志（docker logs / 终端历史可持久化），改为只提示「已写入配置文件」——与 README「日志不含密钥明文」的承诺恢复自洽 |
-| **脱敏开关热更新数据竞争** | `internal/upstream/client.go` + `cmd/server/main.go`：面板保存配置直接写 `SanitizeFingerprints` 字段，与并发出站读取构成数据竞争；新增 `SetSanitizeFingerprints` / `SanitizeEnabled()`（互斥保护：热改装载后以热改值为准，未热改回落装配期字段） |
-| **请求体无上限的内存放大面** | `cmd/server/config.go` + `internal/server/handler.go`：恢复 `server.max_body_mb`（默认 128MB，超限读入前 / 读入中即 413；`0` = 不限，保留「对齐上游」透传语义）；`docker-compose.yml` 端口默认只绑 `127.0.0.1` |
-| **主按钮悬停「变白」** | `index.html`：通用 `button:hover` 的纯色背景特异性 (0,2,1) 高于 `button.primary` (0,1,1)，悬停时渐变被换成 `surface-3`（浅色主题近白）→ 白底白字；`button.primary:hover` 显式写回 `background: var(--grad)` |
-| **弹窗底部圆角尖角** | `index.html`：`.dlg` 缺 `overflow: hidden`，footer 的 `surface-2` 背景方角从圆角外露出（弹窗底部两角「尖角」）；补裁剪，内部滚动仍由 `.body` 自身承担 |
-| **到期分布轨道被钳成 92px** | `index.html`：全局 `.bar`（账号池积分条）带 `max-width: 92px; margin-top: 6px`，同名类漏进 `.pkx-row .bar`（与 v1.9.0 `.us-wrapbar` 同一坑）；显式 `max-width: none; margin: 0` 抵消 |
-| **升级后浏览器沿用旧前端** | `internal/panel/index.go`：`index.html` / `app.js` 是 go:embed 静态资源（无 ETag / Last-Modified 可校验），加 `Cache-Control: no-store`——否则升级二进制后浏览器可能继续用旧缓存，表现为「新功能不出现」需手动强刷 |
-
-## 架构总览
-
-```mermaid
-flowchart LR
-    Client["客户端 / SDK\nOpenAI 兼容请求"] --> H
-
-    subgraph GWI["WorkBuddy2API 网关 :7863"]
-        H["HTTP Handler\n鉴权 · 请求体上限 · 提示词改写 · 轮转"] --> P
-        H --> S
-        P["账号池\n三因子加权 · 熔断 · 冷却 · 租约"] --> U
-        S["会话粘性路由"] -.绑定镜像.-> REDIS
-        T["定时调度\n签到 09/21 · 旅行 09/21 · 活跃 10 · 保活 22"] --> P
-        U["上游 Client\nChatHTTP 流式 · 短 RPC"]
-    end
-
-    P -. "读凭证 (0600)" .-> AUTH[("auths/*.json")]
-    P -. "状态镜像" .-> REDIS[("Upstash Redis\n可选")]
-    U -->|"chat/completions (SSE)"| CB["CodeBuddy\ncopilot.tencent.com"]
-    U -->|"billing / auth / growth"| CB
-```
-
-上游请求在出站前经历统一的改写管线（`internal/upstream/payload.go`）：强制 `stream:true`、`developer` 角色归一、tool_choice 归一、`image_url` 字符串兼容为 OpenAI 对象形态、DeepSeek 思维链注入、`reasoning_effort` 档位降级、`reasoning_content` 回填、指纹脱敏。
-
-## 仓库结构
-
-```text
-├── cmd/
-│   ├── server/                       # 网关主服务（配置加载 / 组件装配 / 热生效接线）
-│   ├── signin/ · login/ · credit/    # 签到 / OAuth 登录 / 积分日报 CLI
-│   └── trial/                        # global trial 加油包一次性批量领取
-├── internal/
-│   ├── auth/                         # 凭证解析、token 刷新、realm（CN / global）判定
-│   ├── pool/                         # 账号池：三因子选号 / 冷却 / 熔断 / 在途 / 粘性
-│   ├── scheduler/                    # 定时排程：签到 / 活跃 / 旅行 / 保活 / 夜猫子 / 成长队列
-│   ├── server/                       # OpenAI 兼容 HTTP 层：鉴权 / 改写 / SSE 重建 / 请求日志
-│   ├── convert/                      # 多协议适配：Anthropic Messages / Responses / Gemini ⇄ OpenAI 互转
-│   ├── upstream/                     # 上游客户端：chat · billing · growth · 任务判据事件链
-│   ├── panel/                        # Web 管理面板（index.html + app.js 经 go:embed 进二进制）
-│   ├── prompt/                       # 系统提示词：内置默认 + 降级中性提示词
-│   ├── session/ · redisstore/        # 会话粘性内存表 + Upstash Redis 异步镜像
-│   ├── usage/ · calls/               # 用量聚合台账（data/usage.json）+ 逐请求明细环形缓冲
-│   └── httpauth/ · livecfg/ · logfmt/  # 常量时间鉴权 / 热生效配置快照 / 日志格式约定
-├── scripts/                          # Python 工具（探测 / 诊断 / 逆向验证），见「工具脚本」
-├── config.example.json               # 配置全字段参考（占位值，不含任何真实密钥）
-├── Dockerfile · Dockerfile.cn · docker-compose.yml
-└── .github/workflows/                # CI：GHCR 多架构镜像 + 五平台二进制 Release
-```
 
 ## 快速开始
 
@@ -398,6 +180,238 @@ curl -s http://localhost:7863/v1/chat/completions \
   -H "Authorization: Bearer your-api-key" \
   -H "Content-Type: application/json" \
   -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}'
+```
+
+## 核心能力
+
+| 能力 | 说明 |
+|---|---|
+| 🔑 **OAuth 一键登录** | `login.sh` 设备授权流程，自动落盘凭证并重启容器加载新账号 |
+| 🔄 **多账号池** | 三因子加权随机选号（积分占比 ×10 + 闲置补偿 + 成功率 ×3），Top-5 候选 + 防惊群 |
+| 🛡️ **熔断与冷却** | 429 软冷却 600s 起指数退避（封顶 `soft_rate_max`，**账号级**）、**模型级 6004 只锁「账号 × 模型」并精确冷到上游重置墙钟**（见[常见问题](#429-code6004模型级限流的冷却语义)）、404 固定 60s 短冷却、402 硬冷却至次日 04:00、连续失败熔断、在途租约限流 |
+| 🧲 **会话粘性** | 同一会话（`conversation_id`）尽量绑定同一账号，TTL 滚动续期，失败自动解绑，可镜像 Redis 防重启丢失 |
+| ⏰ **定时任务** | 六类独立排程、各有开关：签到（09/21 点，末尾自动跑**连登管家**：兑换已解锁档位 + 抽完抽奖次数）、活跃上报（10 点，点亮连登 / 解锁领养 + streak 自检）、猫猫旅行（09/21 点）、token 保活（22 点）、夜猫子补足（23 点，先查进度再决定是否补 glm-5.2 短对话）、成长任务队列（01 点，Sequential 族零点解锁后自动扫描执行） |
+| ⚡ **流式 + 非流式** | 出站强制 `stream:true`；SSE 帧按规范白名单重建；非流式由本地聚合为单响应 |
+| 🧠 **推理模型兼容** | DeepSeek 思维链注入（`thinking.type=enabled` + 默认档）、`reasoning_content` 多轮回填、effort 档位自动降级 |
+| 💬 **系统提示词体系** | 默认 `passthrough` 透传客户端 system（对齐上游）；可切 `custom`（网关自有提示词替换客户端 system）/ `append`（两者并用），从源头消灭 system 来源的内容误报；拦截时自动换 Degraded 中性提示词重试 |
+| 🗑️ **指纹脱敏** | 出站请求体黑名单指纹字段清洗（可关闭），与提示词体系两层叠加 |
+| 📊 **可观测** | 每请求一行表格日志（TTFB / token 速率 / uid）；`/healthz` 带 `service` 身份标识可接负载均衡 / 宿主探活 |
+| 💾 **状态持久化** | 池状态本地原子落盘 + Upstash Redis 异步镜像（可选），重启择新恢复 |
+| 🖥️ **Web 管理面板** | 内嵌单页面板（明暗主题），账号运维 / 模型档位查询 / 在线改配置（热生效）/ 运行日志 / 积分任务 / **API 密钥管理**，见 [Web 管理面板](#-web-管理面板) |
+| 🌐 **多协议入口** | 入站 **Anthropic Messages / OpenAI Responses / Gemini generateContent** 自动转成 OpenAI 格式，复用同一条转发管线（选号 / 轮转 / 降级 / 改写 / 用量观测全部生效），客户端零改造接入，见[本项目的二开特性](#-本项目的二开特性) |
+
+> 上表是网关能力的全貌（含继承自基线的能力）；**本项目自己新增的能力**——多协议入口的协议转换层、调用记录、API 密钥管理、模型级限流精确冷却等——集中见下一节。
+
+## 🔧 本项目的二开特性
+
+本项目在基线之上持续二次开发，增量覆盖**内核**与**面板**两侧（并非只改前端）：协议层新增多协议入口、调度层细化模型级限流冷却、观测层补全调用记录与用量口径，另有 API 密钥管理与一批缺陷修复。以下每一项均可在 `git log` 中逐条核对。
+
+### 新增能力
+
+| 能力 | 说明与出处 |
+|---|---|
+| **调用记录视图（新）** | 逐请求明细流水：每次上游尝试记一行——时间 / 账号 / 域 / 模型 / 状态 / 耗时 / 输入 / 缓存命中 / 思考 / 输出 / 合计 / 积分。新增 `internal/calls`（纯内存环形缓冲，最近 300 条）与 `GET /panel/api/calls`；装配与写入点：`cmd/server/main.go`、`internal/server/handler.go`（与用量统计同一汇聚点，成功与否都记）、`internal/pool/entry.go`（搬运缓存 / 思考 token 明细） |
+| **调用记录：分页 + 字段过滤 + 失败详情（新）** | 过滤条支持「选择字段（账号 / 模型 / 域 / 状态码 / 失败分类 / 失败原因）+ 关键字」与「全部 / 只看失败 / 只看成功」快捷筛选，计数随筛选联动；底部分页条（总计 / 每页行数 20·30·50·100 / 页码，页数 >10 时中间折叠为省略号），过滤变化回到第 1 页、页码越界自动收敛到末页；失败行可点开**失败详情**（错误分类 + HTTP 状态 + 上游错误原文 + 账号 / 模型 / 完整时间 / 耗时）。后端侧 `calls.Entry` 新增 `status` / `kind` / `err` 三个字段并在 `recordAttempt` 的失败分支填充（分类取 `upstream.ErrKind` 词表，传输层错误记 `transport`），`calls.Add` 统一截断错误原文到 600 字节防体积失控；前端 `internal/panel/app.js`（`renderCalls` / `callsPageWindow` / `callsDetail`）纯本地分页、过滤与展开，展开态按 `seq` 在翻页与自动刷新后保持 |
+| **API 密钥管理（新）** | 侧边栏新增「Key 管理」视图，把「调用凭证」与「面板登录凭证」解耦。`internal/keys`（托管密钥库：`data/api_keys.json` 0600 原子落盘、常量时间校验、`last_used` 防抖落盘、上限 50 枚）+ `internal/panel/keys.go`（`GET/POST /panel/api/keys`、`/{id}/update`、`/{id}/remove`）+ 前端视图与 `internal/server/handler.go`（`authorize`：主密钥或任一启用托管密钥）。**权限边界**：托管密钥只授权 `/v1/*`、`/status`，面板管理面只认主密钥——避免「调用凭证 → 管理面」的权限升级 |
+| **`Dockerfile.cn`（受限网络构建版）** | 与原 Dockerfile 产物等价，仅构建期适配国内 / 受限网络：Go 模块走 `goproxy.cn`、Alpine 包走 USTC 镜像、省略 `# syntax` 指令避免额外拉取 `dockerfile` frontend 镜像、声明并透传 `HTTP_PROXY` 等 ARG 以便清空 Docker Desktop 注入的不可达代理。用法见文件头部注释 |
+| **多协议入口（新）** | 新增 `internal/convert`（Anthropic Messages / OpenAI Responses / Gemini generateContent ⇄ OpenAI Chat Completions 双向转换，含流式事件编码）与 `internal/server/protocol.go`（`/v1/messages`、`/v1/messages/count_tokens`、`/v1/responses`、`/v1beta/models/{model}:*` 四个入口 + 管道复用既有 `chatCompletions`）；`internal/httpauth` 新增 `VerifyToken` 供 `x-api-key` / `x-goog-api-key` / `?key=` 凭证位置兼容。既有 `/v1/chat/completions` 行为零改动 |
+| **模型级限流：精确冷却 + 可视化（新）** | 6004（模型级用量限流）只停「该账号 × 该模型」：冷却截止**直接采信上游「将在 … 重置」墙钟**，不再被账号级 `soft_rate_max` 截断——6004 的重置窗口常达数小时，截断会提前解冻、解冻即再撞 429（实测：01:33 撞限、上游说 03:46 重置，旧逻辑冷到 03:33）。新增 `cooldown.model_rate_max` 可选封顶（默认空 = **不封顶**，面板可改、热生效）。6004 判定**前置**：即使文案缺失/变体也只做模型级有界退避，账号级状态一律不动。该模型全池无号可用时回 **429 + 原因说明**（受限号数 / 最早恢复时刻 / 建议换模型），不再笼统 503。面板账号池新增「模型限流 ×N」标签与**逐行明细**（模型名 + 恢复时刻，多模型同时限额各占一行，>3 折叠，悬停见完整台账）。落点：`internal/pool/cooldown.go`（`CooldownSoftForModel` / `cappedModelUntilLocked` / `ModelBlockSummary`）、`internal/server/handler.go`（`applyErrorPolicy` / 选号失败归因）、`internal/panel/app.js`（`rlmRows` / `hmClock`） |
+
+### 面板前端改造（`internal/panel/index.html` · `internal/panel/app.js`）
+
+| 改动 | 说明 |
+|---|---|
+| **「用量」视图新增缓存 / 思考 / 积分维度** | 从上游 usage 解析并聚合**缓存命中**、**缓存写入**、**思考 token** 与**实际扣除积分**（`usage.credit`）；流式（SSE 末帧）与非流式（聚合响应）两条路径都接，OpenAI 口径 `prompt_tokens_details.cached_tokens`、`completion_tokens_details.reasoning_tokens` 优先，Anthropic 口径 `cache_read_input_tokens`、`cache_creation_input_tokens` 兜底；前端新增缓存构成明细卡（命中 / 写入 / 未命中 + 占比条），各明细表的列头补「缓存命中」「积分」 |
+| **用量趋势图自绘重写** | 纯 SVG 面积 + 折线（不引第三方图表库）：y 轴按「好看的刻度」（1/2/5 × 10ⁿ）取整、渐变填充、跨天分隔线、数据点、悬停十字线与浮动卡片、x 轴按真实时间取点、单点居中不贴边、宽度自适应容器 |
+| **导航与可读性** | 侧栏新增「调用记录」（概览 / 运营 / 系统三组）并接入自动刷新；表头 / 图例中文化（Prompt / Completion → 输入 / 输出）；缓存命中列显示「命中量 + 占输入百分比」；积分单独格式化（小值保精度、大值 k / m 缩写）与千分位整数；账号池「可用 / 总额」积分弱化排版 |
+| **「积分构成」视图重做** | **账号对比**：来源分组卡片（色点 + 名称 + 个数 + 剩余/总额 + 进度条），点击组展开逐包明细（剩余/额度/到期时间）；点卡片标题在下方列表筛选该账号 → **积分到期分布**：横向分段柱状图（灰轨道 = 本行额度合计，绿段 = 各包剩余 / 本行额度——额度未动即占满、消耗越多灰缺口越大，剩余 0 的包不占位；≤30 天逐天、更长并入「30+ 天」）→ **包明细**：专门逐包列表，**按需加载**（默认不渲染，选账号或点卡片标题后显示；「全部账号」按到期升序、单账号按面额降序，≤3 天到期标红 / ≤7 天标黄）。轨道悬停为自定义信息卡（替代原生 `title`） |
+| **Key 管理交互与弹窗** | 新建密钥改为**弹窗先填名称再生成**（空值拦截、Enter 创建 / Esc 取消；避免误点直接产出「未命名」密钥）；弹窗标题加图标徽章、按钮全尺寸；列表支持掩码显示 / 复制 / 改名 / 停用 / 删除，停用与删除立即失效 |
+| **导入 JSON 拖放区** | 原生 `<input type=file>`（「选择文件 未选择任何文件」）替换为虚线拖放区：点击选择 / 拖拽文件 / 键盘（Enter / 空格）三入口统一到 `doImport(file)`；显示已选文件名与大小，非 `.json` 前端直接拒绝 |
+| **自定义下拉组件** | 原生 `<select>` 弹层是系统样式（Windows Chrome 蓝色高亮）无法自定义：视觉隐藏原生 select（读写与 `change` 事件全保留，业务代码零改动），渲染自定义按钮 + `fixed` 定位弹层（`.box` 有 `overflow:hidden`，absolute 弹层会被裁掉；底部空间不足自动向上弹）。覆盖用量时间窗口 / 任务中心并发 / 包明细账号筛选 |
+| **界面细节** | 「模型能力」标题里夹带的开发者备注改为正式提示条；toast 淡出过渡、统计卡布局等样式梳理 |
+
+### 缺陷修复
+
+| 修复 | 说明与出处 |
+|---|---|
+| **批量导入账号整批失败** | `internal/panel/import.go`：导入前确保 `auth_dir` 存在——目录缺失时此前整批账号都会卡在 `SaveAtomic` 写入失败（登录路径早已有该兜底，导入路径缺失） |
+| **导入跳过原因查无实据** | `internal/panel/import.go` + `app.js`：跳过原因改为写入服务端日志，前端导入结果里也直接显示前 3 条——此前只回传前端、前端仅 `console.warn`，「成功 0 个、跳过 N 个」在服务端日志里完全无迹可循 |
+| **用量统计缺积分与缓存口径** | `internal/server/logging.go`（SSE 与聚合响应两条解析路径）、`internal/usage/usage.go`（分桶 / 折叠 / 聚合字段 `credits` · `cached_tokens` · `cache_write_tokens` · `reasoning_tokens`）、`internal/server/handler.go`（汇聚点写入） |
+| **启动日志回显 api_key** | `cmd/server/main.go`：首次自动生成配置时密钥明文进日志（docker logs / 终端历史可持久化），改为只提示「已写入配置文件」——与 README「日志不含密钥明文」的承诺恢复自洽 |
+| **脱敏开关热更新数据竞争** | `internal/upstream/client.go` + `cmd/server/main.go`：面板保存配置直接写 `SanitizeFingerprints` 字段，与并发出站读取构成数据竞争；新增 `SetSanitizeFingerprints` / `SanitizeEnabled()`（互斥保护：热改装载后以热改值为准，未热改回落装配期字段） |
+| **请求体无上限的内存放大面** | `cmd/server/config.go` + `internal/server/handler.go`：恢复 `server.max_body_mb`（默认 128MB，超限读入前 / 读入中即 413；`0` = 不限，保留「对齐上游」透传语义）；`docker-compose.yml` 端口默认只绑 `127.0.0.1` |
+| **主按钮悬停「变白」** | `index.html`：通用 `button:hover` 的纯色背景特异性 (0,2,1) 高于 `button.primary` (0,1,1)，悬停时渐变被换成 `surface-3`（浅色主题近白）→ 白底白字；`button.primary:hover` 显式写回 `background: var(--grad)` |
+| **弹窗底部圆角尖角** | `index.html`：`.dlg` 缺 `overflow: hidden`，footer 的 `surface-2` 背景方角从圆角外露出（弹窗底部两角「尖角」）；补裁剪，内部滚动仍由 `.body` 自身承担 |
+| **到期分布轨道被钳成 92px** | `index.html`：全局 `.bar`（账号池积分条）带 `max-width: 92px; margin-top: 6px`，同名类漏进 `.pkx-row .bar`（与 v1.9.0 `.us-wrapbar` 同一坑）；显式 `max-width: none; margin: 0` 抵消 |
+| **升级后浏览器沿用旧前端** | `internal/panel/index.go`：`index.html` / `app.js` 是 go:embed 静态资源（无 ETag / Last-Modified 可校验），加 `Cache-Control: no-store`——否则升级二进制后浏览器可能继续用旧缓存，表现为「新功能不出现」需手动强刷 |
+
+## 🎯 成长任务一键完成（17/18）
+
+官方「成长计划」的 18 个成长任务中，**17 个可在面板上一键纯 API 完成**——无需安装官方客户端、无需人工交互，点一下「一键完成」即自动推进进度、等待异步计分落定并**自动领奖**。剩余任务展示操作指引。
+
+### 任务覆盖与奖励
+
+| 任务 | 奖励 | 一键完成方式 |
+|---|---|---|
+| `first_buddy` | +300c +8e | 解锁上报 → 同意协议 → 领养第一只 Buddy |
+| `create_canvas` | +300c +5e | 设计画布创建事件组（Ardot 遥测） |
+| `chat_5` | +100c | 对话活跃上报 ×5（自动补足差额） |
+| `Model_chat_GLM5.2` | +100c +5e | glm-5.2 真实对话一次（发一条短消息） |
+| `RichMeow_Chat` | +100c +5e +UR Buddy | 桌面端对话事件链（6 事件，含成功回执） |
+| `Buddy_App` | +100c +5e | Buddy 应用「发现→进入→授权」事件链 |
+| `Buddy_App_QQ` | +50c +5e | 企鹅教师助手进入事件链（与上一条共用） |
+| `automation_1` | +100c +5e | 定时任务创建成功事件 |
+| `Library_read` | +100c +5e | 资料库阅读点击（web 域上报） |
+| `template_5` | +100c +5e | 模板使用事件组 ×5 |
+| `playbook_prompt` | +100c +5e | 灵感案例「做同款」发送事件 |
+| `expert_5` | +100c +5e | 真实专家召唤+使用链 ×5（专家市场拉真实专家 → 真实对话 → 使用事件） |
+| `Expert_team_use_3` | +100c +5e | 专家团召唤+使用链 ×3 |
+| `Hp_Appearance` | +100c +5e | 主题设置 + 皮肤生效事件 |
+| `Expert_lighthouse` | +100c +5e | 轻量云专家召唤+使用链（真实对话 requestId，**可免费领一个月轻量服务器**） |
+| `skill_1` | +100c +5e | 真实对话 + 技能加载事件（skill_info） |
+
+**全新账号一键全做完 ≈ +1950 credits +78 能量**，其中仅数个任务涉及真实对话（`Model_chat_GLM5.2` 一条、`expert_5`/`Expert_team_use_3`/`skill_1` 各数条 fast-model 短对话），其余全部为行为事件上报，零对话消耗。
+
+### 不可自动的 1 个
+
+| 任务 | 原因 |
+|---|---|
+| `Expert_Philanthropy` | 需真实捐款（服务端领奖时校验捐赠回执，已实测无法绕过） |
+
+### 实现原理（简述）
+
+任务计分走 `/v2/report` 行为上报，但**不同任务认不同客户端指纹**：CLI 指纹（`www.codebuddy.cn`）、桌面指纹（`copilot.tencent.com` + `WorkBuddy/5.5.6` UA + `workbuddy-desktop` 事件族）、web 指纹（`www.workbuddy.cn` + `x-client-platform: web`）。网关为每类任务构造对应指纹的判据事件链（`internal/upstream/desktop.go`）；专家类任务额外要求真实专家 id 与真实对话回执（`internal/upstream/streak.go` 之外的 expert 序列）。上报 200 ≠ 计分——面板在执行后轮询任务进度，达标即自动调用 Web 域领奖接口。
+
+> ⚠️ 行为事件按天幂等：重复点「一键完成」不会重复扣资源，已达标的任务自动跳过。
+
+### 🧭 任务中心（面板新视图）
+
+「任务中心」视图把散落的任务能力收拢成一处：
+
+- **全账号任务扫描**：一键拉取每个账号的成长任务（未完成且可自动化的 19 项，含小程序口径的「校园日」与「小程序首对话」）+ 开学季待办，列表一目了然
+- **执行队列**：把待办按账号排队执行——账号内串行（与单任务/一键完成共用互斥锁），账号间可选并发（1-3）；执行进度实时更新到每个条目
+- **开学季独立状态卡**：每账号 5 任务（分享/桌面/对话×3/专家/学生认证）的状态矩阵 + 剩余抽奖次数，一键触发全账号闭环
+- **日志分频道**：运行日志按「任务 / 对话 / 系统」三个频道筛选——对话流量再大，任务结果也不会被冲掉；日志条目带频道徽标与时间
+
+### 🎒 开学季活动（5/5 全自动，活动期至 2026-09-24）
+
+官方「AI 好 Buddy，开学有好礼」小程序活动的 5 个任务**全部纯 API 自动完成**（挂签到排程末尾，幂等）：
+
+| 任务 | 奖励（每日） | 判据（已逆向） |
+|---|---|---|
+| 分享活动 | +100c +1抽奖 | `share-complete` 直调即点亮 |
+| 桌面端体验（单次） | +100c +1抽奖 | viewed 激活 + 真实 chat + 桌面六事件链 |
+| 和 AI 对话 3 次 | +50c +1抽奖 | viewed 后 3 条 `chat_request_send` 埋点（无需真实会话） |
+| 召唤开学季专家 | +50c +1抽奖 | viewed 后 mp 事件链（召唤×3 + 对话） |
+| 学生认证 | +100c | 需微信学生真实认证，不做 |
+
+抽奖次数自动全部抽完。期间逆向成果（cf-connect 加密通道、mp 云对话全链路）记录在 `data/desktop-task-protocol.md` §8。
+
+同一活动在成长任务中心还有两条**小程序口径**任务（`X-Client-Platform: miniprogram` 专属下发，默认列表不可见，各 +100c+5e）：
+
+| 任务 | 判据（已逆向） |
+|---|---|
+| `school_season` 校园日 | mini `chat_request_send` + `activityId=school_open_day_2026`（无 activityId 不点亮；accept/claim 均要求 mp 头） |
+| `Sequential_Tasks_1` 小程序首对话 | mini `chat_request_send`（无 activityId，服务端按 source=mini_program 指纹关联） |
+
+任务中心扫描自动合并 mp 口径待办；accept 带**登记回读验证**（上游存在 200+OK 但未落账的形态，未生效自动重试一次）。
+
+### 连登兑换与抽奖（自动）
+
+成长中心连登档位（连续登录 7/14/28 天）兑换后发放积分 / 能量 / 补签卡 / **抽奖次数**，抽奖次数只能从兑换获得。网关把它挂在每日签到排程末尾自动跑闭环（见[定时任务](#定时任务)）：档位解锁当天自动兑换、有抽奖次数自动抽完，全程无需人工盯。
+
+## 🆚 与上游的差异（继承自增强分支）
+
+本节记录的是**基线**带来的能力与沿革：增强分支 [linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel) 相对 [原始项目 master](https://github.com/Sliverkiss/workbuddy2api) 的增量（均已在真实多账号环境验证），以及本项目早年的两轮 fork 同步记录——这些能力本项目**继承并保留**，属基线功劳；本项目自己在基线之上的增量见 [本项目的二开特性](#-本项目的二开特性)。
+
+### 基线新增能力
+
+| 能力 | 说明 |
+|---|---|
+| **Web 管理面板** | `internal/panel`，前端 go:embed 单文件进二进制，零外部依赖。账号池可视化（健康色条 / 积分量条 / 冷却倒计时）、单号运维、批量任务、日志查看、明暗主题 |
+| **浏览器内 OAuth 添加账号** | 面板「添加账号」按钮完成设备授权 → 凭证落盘 → **热加载进池（免重启）**，替代命令行 `login.sh` 流程 |
+| **在线配置编辑（热生效）** | 面板直接改 `config.json`：API 密钥 / `soft_rate` / 脱敏开关 / 池参数 / 任务排程**立即生效**；装配期字段（listen 等）保存后提示需重启。写入采用深合并 + 原子替换，保留未知键 |
+| **积分任务体系** | 任务列表 / 接受 / 领取接口 + 面板弹窗；「一键完成」覆盖 **17 个任务**（对话 / 领养 / 桌面行为链 / 模板 / 灵感案例 / 画布 / 专家召唤 / 技能尝鲜 / 主题 / 资料库 / 夜猫子等），推进进度、等待异步计分落定后**自动领奖**，纯 API 零客户端依赖 |
+| **首启自动生成配置** | 目录下无 `config.json` 时自动生成推荐配置（含 `crypto/rand` 随机 `api_key`），双击即开 |
+| **粘性会话内容回退** | 客户端不发 `conversation_id` 时，用 `system + 首条 user` 哈希派生会话键（`d-` 前缀），通用 OpenAI 客户端也能享受粘性 |
+| **余额后台刷新** | `schedule.balance_refresh_minutes`（默认 5）周期查余额并更新池，冷却账号余额恢复自动解冻 |
+| **模型能力透出** | `/v1/models` 附带 `supported_efforts` / `default_effort` / 积分倍率 / 输入输出上限等上游真实字段 |
+| **安全加固** | 常量时间密钥比较（`internal/httpauth`）、CSP 与安全响应头、UID 白名单防路径穿越、前端属性转义修复 |
+| **领养前置修复** | 上游 `travelAdopt` 缺 report 前置导致领养恒失败于 `first_buddy task not completed yet`；本分支修正后实测 +300 到账（3/3 账号） |
+
+### 同步上游
+
+**第一轮（fork 基线 `53ee3a1` → `9a87758`，34 个提交）**：定时任务独立排程（当时四类：签到 / 旅行 / 活跃 / 保活）、pool 文件拆分、12153 连续计数才禁用、429 `code=6004` 模型级限流收窄、11101 不罚号、请求体 413、DeepSeek 思维链、reasoning_content 回填、Codex 指纹脱敏、系统提示词体系、出站 UA 可配等。
+
+**第二轮（`9a87758` → `ea8b1e5`，2026-09-14，只吸收底层）**：
+
+| 上游改动 | 吸收内容 |
+|---|---|
+| 净化增强 | `tool_calls.arguments` 盲区修复（content=null 的工具调用轮此前完全漏净化）、裸 `11128` 反探测改写、桌面版身份句（逗号形态）漏网修复、反馈句整句改写 |
+| 出站头族 | UA 对齐官方三段式 `WorkBuddy/<ver> WorkBuddy/<ver> CLI/<ver>`（默认 5.5.4/2.137.1，可配）；`X-IDE-*` 用量归属四头 + `X-Agent-Purpose`（`client_name` 配 `WorkBuddy` 即对齐官方桌面端）；`X-Device-Token` 设备风控头（auth 每号 / config / 文件三源）；`X-IDE-Version` 补齐 |
+| 并发修复 | 客户端 IP 改按请求参数传递（消除共享字段竞态）；billing 单段 UA 形态 |
+| 签到幂等 | `IsAlreadyCheckin` 识别"今天已签到"（code=10001/14001），调度日志不再把重复签到当失败 |
+| 粘性按模型判活 | 会话绑定的账号被 6004 模型级限额后，换模型请求自动解绑重分配（治"限额后换不动号"）；`/healthz` 探活计入模型豁免形态（治"全号被单模型限流探活误报 503"） |
+| report 增强 | `ReportChatActivity` 支持独立 `requestID`（同会话多轮上报各条可区分） |
+
+未吸收（明确不做）：脚本体系（task_runner/school 脚本—我们已有更完整的纯 API 实现）、governance/CI workflow、成本账本选号（依赖 usage.credit 观测，收益待验证）。
+
+### 未做 / 待办
+
+| 状态 | 事项 | 说明 |
+|---|---|---|
+| ✅ 已修复 | ~~single 类任务奖励领取~~ | **领奖已打通**：正确端点是 Web 域 `POST https://www.workbuddy.cn/activity/growth/tasks/<task_code>/claim`（任务码在路径、无 body、`x-client-platform: web`）。此前误用 CLI 域 `copilot.tencent.com/v2/.../reward/claim` 导致长期 400。「一键完成」现已**达标即自动领奖**（含异步计分等待），面板也可手动领取。实测 +100 分 +5 能到账、重复领取幂等 |
+| ✅ 已破解 | ~~桌面端 / 交互类任务~~ | 通过客户端指纹逆向（`/v2/report` 三通道 + 判据事件载荷），**17/18 任务可纯 API 一键完成**：`RichMeow_Chat`（桌面 6 事件链）、`Buddy_App(_QQ)`、`automation_1`、`Library_read`、`template_5`、`playbook_prompt`、`create_canvas`、`expert_5`、`Expert_team_use_3`、`Expert_lighthouse`、`Hp_Appearance`、`skill_1`、`black_cat`（夜间窗口自动补足）等，多账号实测点亮 |
+| ⚠️ 不支持 | **剩余 1 个任务** | `Expert_Philanthropy`（需真实捐款：服务端领奖时校验捐赠回执，已实测无法绕过）；面板展示指引 |
+| ❌ 未做 | **面板侧 Upstash / 凭证目录配置** | 涉及启动期装配，需手工编辑 `config.json`（面板会提示为重启项） |
+| ❌ 未做 | **HTTPS / 内置限流** | 设计上交给反向代理（Nginx / Caddy）。服务本身只提供明文 HTTP，公网部署**必须**置于 HTTPS 反代之后 |
+
+## 架构总览
+
+```mermaid
+flowchart LR
+    Client["客户端 / SDK\nOpenAI 兼容请求"] --> H
+
+    subgraph GWI["WorkBuddy2API 网关 :7863"]
+        H["HTTP Handler\n鉴权 · 请求体上限 · 提示词改写 · 轮转"] --> P
+        H --> S
+        P["账号池\n三因子加权 · 熔断 · 冷却 · 租约"] --> U
+        S["会话粘性路由"] -.绑定镜像.-> REDIS
+        T["定时调度\n签到 09/21 · 旅行 09/21 · 活跃 10 · 保活 22"] --> P
+        U["上游 Client\nChatHTTP 流式 · 短 RPC"]
+    end
+
+    P -. "读凭证 (0600)" .-> AUTH[("auths/*.json")]
+    P -. "状态镜像" .-> REDIS[("Upstash Redis\n可选")]
+    U -->|"chat/completions (SSE)"| CB["CodeBuddy\ncopilot.tencent.com"]
+    U -->|"billing / auth / growth"| CB
+```
+
+上游请求在出站前经历统一的改写管线（`internal/upstream/payload.go`）：强制 `stream:true`、`developer` 角色归一、tool_choice 归一、`image_url` 字符串兼容为 OpenAI 对象形态、DeepSeek 思维链注入、`reasoning_effort` 档位降级、`reasoning_content` 回填、指纹脱敏。
+
+## 仓库结构
+
+```text
+├── cmd/
+│   ├── server/                       # 网关主服务（配置加载 / 组件装配 / 热生效接线）
+│   ├── signin/ · login/ · credit/    # 签到 / OAuth 登录 / 积分日报 CLI
+│   └── trial/                        # global trial 加油包一次性批量领取
+├── internal/
+│   ├── auth/                         # 凭证解析、token 刷新、realm（CN / global）判定
+│   ├── pool/                         # 账号池：三因子选号 / 冷却 / 熔断 / 在途 / 粘性
+│   ├── scheduler/                    # 定时排程：签到 / 活跃 / 旅行 / 保活 / 夜猫子 / 成长队列
+│   ├── server/                       # OpenAI 兼容 HTTP 层：鉴权 / 改写 / SSE 重建 / 请求日志
+│   ├── convert/                      # 多协议适配：Anthropic Messages / Responses / Gemini ⇄ OpenAI 互转
+│   ├── upstream/                     # 上游客户端：chat · billing · growth · 任务判据事件链
+│   ├── panel/                        # Web 管理面板（index.html + app.js 经 go:embed 进二进制）
+│   ├── prompt/                       # 系统提示词：内置默认 + 降级中性提示词
+│   ├── session/ · redisstore/        # 会话粘性内存表 + Upstash Redis 异步镜像
+│   ├── usage/ · calls/               # 用量聚合台账（data/usage.json）+ 逐请求明细环形缓冲
+│   └── httpauth/ · livecfg/ · logfmt/  # 常量时间鉴权 / 热生效配置快照 / 日志格式约定
+├── scripts/                          # Python 工具（探测 / 诊断 / 逆向验证），见「工具脚本」
+├── config.example.json               # 配置全字段参考（占位值，不含任何真实密钥）
+├── Dockerfile · Dockerfile.cn · docker-compose.yml
+└── .github/workflows/                # CI：GHCR 多架构镜像 + 五平台二进制 Release
 ```
 
 ## 配置说明
@@ -636,7 +650,7 @@ http://127.0.0.1:7863/panel/
 
 > 账号行内「任务」按钮打开**积分任务弹窗**：展示全部任务（进度 / 奖励分数与能量 / 状态）；「全部接受」批量报名；「一键完成可自动任务」覆盖 **17 个任务**（推进进度 + 异步计分等待 + **自动领奖**，幂等可重复点）；其余任务展示操作指引。
 
-> 其中「**调用记录**」视图，以及「用量」的缓存命中 / 思考 token / 积分维度与趋势图重写，为**本仓库二开新增**（上游面板没有），详见 [本仓库的二开改动](#-本仓库的二开改动)。
+> 其中「**调用记录**」视图，以及「用量」的缓存命中 / 思考 token / 积分维度与趋势图重写，为**本项目二开新增**（上游面板没有），详见 [本项目的二开特性](#-本项目的二开特性)。
 
 **配置热生效**：保存配置后，`api_key`、`cooldown.soft_rate` / `soft_rate_max` / `model_rate_max`、`features.sanitize_blacklist_fingerprints`、
 `pool.*`（熔断/在途/权重/降权/探索窗口）、`schedule.*`（六类时点 / 开关 / 余额刷新间隔）**立即生效，无需重启**；
