@@ -53,6 +53,36 @@ function toast(msg, cls) {
     setTimeout(() => el.remove(), 200);
   }, 3400);
 }
+// ask 页面内确认弹窗（Promise<boolean>）。为什么不用原生对话框：原生 confirm
+// 样式随浏览器变化、无法定制（与面板风格脱节），部分内嵌 WebView / IDE 内置
+// 浏览器还会把它静默拦掉、直接返回 false——表现为按钮「点了没反应」且无提示。
+// 页面内弹窗不受该限制。交互：Enter / 点「确定」= true；Esc / 点「取消」/ 点遮罩 = false。
+function ask(msg, okText) {
+  return new Promise(resolve => {
+    const veil = $('askVeil');
+    const ok = $('btnAskOk'), cancel = $('btnAskCancel');
+    $('askMsg').textContent = msg;
+    ok.textContent = okText || '确定';
+    const finish = v => {
+      veil.classList.remove('on');
+      veil.onclick = null;
+      ok.onclick = null;
+      cancel.onclick = null;
+      document.removeEventListener('keydown', onKey);
+      resolve(v);
+    };
+    const onKey = e => {
+      if (e.key === 'Escape') finish(false);
+      else if (e.key === 'Enter') finish(true);
+    };
+    ok.onclick = () => finish(true);
+    cancel.onclick = () => finish(false);
+    veil.onclick = e => { if (e.target === veil) finish(false); };
+    document.addEventListener('keydown', onKey);
+    veil.classList.add('on');
+    setTimeout(() => ok.focus(), 50);
+  });
+}
 // esc 文本/属性双安全转义。不能只用 div.innerHTML（它转义 <>& 但不转义引号），
 // 否则字符串拼进 HTML 属性（如 title="uid: ..."）时引号可闭合属性并注入事件处理器。
 // 显式替换 5 个字符：& < > " '（& 必须最先，避免二次转义）。
@@ -274,8 +304,8 @@ $('accBody').addEventListener('click', async ev => {
   const b = ev.target.closest('button[data-a]');
   if (!b) return;
   const u = b.dataset.u, a = b.dataset.a;
-  if (a === 'remove' && !confirm('移除账号将删除池状态与 auths/ 下的凭证文件，且不可恢复。确认移除？')) return;
-  if (a === 'disable' && !confirm('禁用后该账号不再参与选号，需手动解冻才能恢复。确认禁用？')) return;
+  if (a === 'remove' && !(await ask('移除账号将删除池状态与 auths/ 下的凭证文件，且不可恢复。确认移除？', '移除'))) return;
+  if (a === 'disable' && !(await ask('禁用后该账号不再参与选号，需手动解冻才能恢复。确认禁用？', '禁用'))) return;
   b.disabled = true;
   try {
     if (a === 'checkin') {
@@ -849,7 +879,7 @@ $('btnTaskAcceptAll').onclick = async () => {
 $('btnTaskAutoAll').onclick = async () => {
   if (!taskUID) return;
   const btn = $('btnTaskAutoAll');
-  if (!confirm('将依次执行：补报对话事件、领取 Buddy、glm-5.2 对话、尝试上报。\n过程约 1-2 分钟（含真实对话），确认继续？')) return;
+  if (!(await ask('将依次执行：补报对话事件、领取 Buddy、glm-5.2 对话、尝试上报。\n过程约 1-2 分钟（含真实对话），确认继续？', '开始执行'))) return;
   btn.disabled = true; btn.textContent = '执行中…';
   try {
     const r = await api('accounts/' + encodeURIComponent(taskUID) + '/tasks/auto_all', { method: 'POST' });
@@ -1207,7 +1237,7 @@ $('btnScanAll').onclick = async () => {
 };
 $('btnRunQueue').onclick = async () => {
   const conc = Number($('qcConc').value) || 1;
-  if (!confirm('扫描全部账号待办并排队执行（账号并发 ' + conc + '，账号内串行）。\n含真实对话的任务耗时较长，确认继续？')) return;
+  if (!(await ask('扫描全部账号待办并排队执行（账号并发 ' + conc + '，账号内串行）。\n含真实对话的任务耗时较长，确认继续？', '开始执行'))) return;
   const b = $('btnRunQueue');
   b.disabled = true; b.textContent = '启动中…';
   try {
@@ -2072,7 +2102,7 @@ $('keysBody').addEventListener('click', async ev => {
     return;
   }
   if (a === 'remove') {
-    if (!confirm('删除后该密钥立即失效且不可恢复。确认删除「' + k.name + '」？')) return;
+    if (!(await ask('删除后该密钥立即失效且不可恢复。确认删除「' + k.name + '」？', '删除'))) return;
     b.disabled = true;
     try {
       await api('keys/' + encodeURIComponent(id) + '/remove', { method: 'POST' });

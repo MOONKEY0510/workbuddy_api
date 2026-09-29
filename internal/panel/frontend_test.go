@@ -128,6 +128,43 @@ func TestClipboardGoesThroughCopyText(t *testing.T) {
 	}
 }
 
+// TestConfirmGoesThroughAsk 确认类交互必须走页面内 ask() 弹窗（index.html #askVeil）。
+//
+// 为什么需要：原生对话框样式随浏览器变化、无法定制（与面板风格完全脱节），在部分
+// 内嵌 WebView / IDE 内置浏览器里还会被静默拦截——confirm 直接返回 false，表现为
+// 「按钮点了没反应」且无任何提示。禁用/移除/删除等危险操作的确认交互统一走自绘
+// 弹窗（样式可控、行为一致、Enter/Esc 可用）。本测试把「无原生 confirm」固化为
+// 不变量（注释里的提及不算命中），并顺带校验 ask() 依赖的弹层骨架存在。
+func TestConfirmGoesThroughAsk(t *testing.T) {
+	js, err := os.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits []int
+	for i, l := range strings.Split(string(js), "\n") {
+		trimmed := strings.TrimSpace(l)
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") || strings.HasPrefix(trimmed, "/*") {
+			continue
+		}
+		if strings.Contains(l, "confirm(") {
+			hits = append(hits, i+1)
+		}
+	}
+	if len(hits) != 0 {
+		t.Fatalf("app.js 不应再调用原生 confirm（行 %v）——确认交互统一走 ask() 弹窗", hits)
+	}
+
+	html, err := os.ReadFile("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{`id="askVeil"`, `id="askMsg"`, `id="btnAskOk"`, `id="btnAskCancel"`} {
+		if !strings.Contains(string(html), id) {
+			t.Errorf("index.html 缺少 ask() 弹窗依赖的元素 %s（弹窗打不开）", id)
+		}
+	}
+}
+
 // TestBeautifySelectTargetsExist app.js 里 beautifySelect($('id')) 注册的每个 id
 // 必须在 index.html 中存在。
 //

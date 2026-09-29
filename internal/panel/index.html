@@ -1499,6 +1499,26 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
   </div>
 </div>
 
+<!-- 通用确认弹窗（替代原生对话框：原生 confirm 样式随浏览器变化、无法定制，
+     部分内嵌 WebView 还会静默拦截；页面内弹窗样式与面板一致、行为可控） -->
+<div class="veil" id="askVeil">
+  <div class="dlg" style="width:440px">
+    <header>
+      <h3 class="dlg-tt"><span class="dlg-ico" aria-hidden="true">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2.6 14 13H2z"/><path d="M8 6.4v3.4M8 11.6v.02"/></svg>
+      </span>确认操作</h3>
+    </header>
+    <div class="body">
+      <div id="askMsg" style="line-height:1.65;font-size:13.5px;white-space:pre-line"></div>
+    </div>
+    <footer>
+      <span class="grow"></span>
+      <button id="btnAskCancel">取消</button>
+      <button id="btnAskOk" class="primary">确定</button>
+    </footer>
+  </div>
+</div>
+
 <div id="toasts"></div>
 
 <script src="app.js"></script>
