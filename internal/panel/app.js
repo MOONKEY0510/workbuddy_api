@@ -79,6 +79,33 @@ function dur(sec) {
   return h ? h + '时' + String(m).padStart(2, '0') + '分' : m ? m + '分' + String(s).padStart(2, '0') + '秒' : s + '秒';
 }
 
+// copyText 通用剪贴板（所有「复制」按钮的唯一入口）。两段式：
+//   1) clipboard API——只在 secure context（https / localhost）存在，且即便存在也可能
+//      被权限策略拒绝（NotAllowedError：文档未聚焦 / 用户拒绝授权）；
+//   2) 隐藏 textarea + execCommand('copy') 降级——覆盖「http 访问内网 IP 面板」这一
+//      最常见部署形态：此时 navigator.clipboard 为 undefined，直接调用会同步抛
+//      TypeError，表现为「点了复制没反应/提示失败」。
+// 失败时 reject，由调用方给出「手动选择复制」的兜底提示。
+async function copyText(text) {
+  text = String(text == null ? '' : text);
+  if (!text) throw new Error('nothing to copy');
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return; } catch (e) { /* 落到降级 */ }
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', ''); // 防移动端聚焦时弹键盘
+  ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0';
+  document.body.appendChild(ta);
+  try {
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length); // iOS 需要显式区间
+    if (!document.execCommand('copy')) throw new Error('execCommand copy failed');
+  } finally {
+    ta.remove();
+  }
+}
+
 function formatTokenCount(tokens) {
   if (tokens == null || tokens === '') return '—';
   const n = Number(tokens);
@@ -603,7 +630,7 @@ function closeAdd() { stopPoll(); loginState = null; $('addVeil').classList.remo
 $('btnCloseAdd').onclick = closeAdd;
 $('btnStartLogin').onclick = startAddLogin;
 $('btnOpenUrl').onclick = () => open($('addUrl').textContent, '_blank');
-$('btnCopyUrl').onclick = () => navigator.clipboard.writeText($('addUrl').textContent)
+$('btnCopyUrl').onclick = () => copyText($('addUrl').textContent)
   .then(() => toast('链接已复制', 'ok'), () => toast('复制失败，请手动选择复制', 'err'));
 /* 导入 JSON：点击选择与拖拽共用 doImport(file) 入口（FormData 直传 File）。
    dropzone 替代原生 file input——原生样式是浏览器默认的「选择文件 未选择任何文件」。 */
@@ -716,9 +743,11 @@ function beautifySelect(sel) {
   sel.addEventListener('change', sync);
   sync();
 }
-beautifySelect($('usWindow'));  // 用量窗口
-beautifySelect($('qcConc'));    // 任务中心并发
-beautifySelect($('pkAcct'));    // 包明细账号筛选
+beautifySelect($('usWindow'));   // 用量窗口
+beautifySelect($('qcConc'));     // 任务中心并发
+beautifySelect($('pkAcct'));     // 包明细账号筛选
+beautifySelect($('callsField'));    // 调用记录字段过滤（原生下拉是系统样式，必须走同一组件）
+beautifySelect($('callsPageSize')); // 调用记录每页行数
 
 /* ── 顶部动作 ─────────────────────────────────────────────────────── */
 $('btnAdd').onclick = openAdd;
@@ -1096,21 +1125,6 @@ function qrSVG(M, px) {
 }
 
 /* ── 开学季券码查询（弹窗，仿活动页 #/prizes?tab=vouchers）──────────── */
-/* copyText：clipboard API 只在 secure context（https/localhost）可用，
-   远程 http 面板会拿不到 navigator.clipboard → 降级 execCommand。 */
-function copyText(text) {
-  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
-  return new Promise((resolve, reject) => {
-    const ta = document.createElement('textarea');
-    ta.value = text;
-    ta.style.cssText = 'position:fixed;opacity:0';
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand('copy') ? resolve() : reject(new Error('copy failed')); }
-    catch (e) { reject(e); }
-    finally { ta.remove(); }
-  });
-}
 
 function vcCard(v) {
   const expired = v.valid_to && new Date(v.valid_to) < new Date();
@@ -1732,48 +1746,239 @@ if ($('usWindow')) $('usWindow').onchange = loadUsage;
 /* ── 调用记录（逐请求明细流水）───────────────────────────────────── */
 /* 每行是一次账号尝试：谁、哪个模型、成没成、多少 token、命中多少缓存、
    扣了多少积分、耗时多久。服务端是纯内存环形缓冲（最近 N 条，重启即空）。 */
+/* 过滤（字段 + 关键字 + 成功/失败）与失败详情展开都在本地做——数据量 ≤300 条，
+   再打一次后端反而增加往返；失败详情需要后端在 calls.Entry 里带 kind/err/status。 */
+let callsData = { entries: [], cap: 300 };
+const callsOpen = new Set();                       // 已展开详情的失败行（seq），刷新后保持
+const callsFilter = { state: 'all', field: '', q: '' };
+// 分页（本地切片：数据 ≤300 条，无需后端分页）。页码 1-based；每页行数由 select 决定。
+let callsPage = 1;
+let callsPageSize = 30;
+let callsPages = 1;
+
+// 失败分类 → 可读文案（词表与 internal/upstream 的 ErrKind.String() 对齐）
+const CALLS_KIND = {
+  soft_rate: '上游限流', hard_credit: '积分/额度不足', session_dead: '会话失效',
+  not_found: '上游 404', server: '上游 5xx', content_blocked: '内容策略拦截',
+  bad_params: '请求参数错误', account_fault: '账号级故障', model_blocked: '模型不可用',
+  waf_block: 'WAF 拦截', prompt_too_long: '上下文超限', image_invalid: '图片无效',
+  client: '客户端/业务错误', transport: '网络传输错误', upstream_parse: '上游响应解析失败',
+};
+const callsKindName = k => CALLS_KIND[k] || k || '未知';
+
 function callsTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
   if (isNaN(d.getTime())) return '—';
   return d.toLocaleTimeString('zh-CN', { hour12: false });
 }
-async function loadCalls() {
+function callsFullTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  return d.toLocaleString('zh-CN', { hour12: false });
+}
+
+// callsFields 一行参与过滤的字段文本（字段下拉的取值面，"全部字段"= 全部字段的并集）。
+function callsFields(e) {
+  return {
+    who: (e.nick || '') + ' ' + (e.uid || ''),
+    model: e.model || '',
+    realm: e.realm || '',
+    status: e.status ? String(e.status) : '',
+    kind: callsKindName(e.kind),
+    err: e.err || '',
+    state: e.ok ? '成功' : '失败',
+  };
+}
+function callsMatch(e) {
+  if (callsFilter.state === 'ok' && !e.ok) return false;
+  if (callsFilter.state === 'fail' && e.ok) return false;
+  const q = callsFilter.q.trim().toLowerCase();
+  if (!q) return true;
+  const f = callsFields(e);
+  if (callsFilter.field) return String(f[callsFilter.field] || '').toLowerCase().includes(q);
+  return Object.keys(f).some(k => String(f[k]).toLowerCase().includes(q));
+}
+
+// callsDetail 失败详情行（点击失败行展开）：分类 / HTTP 状态 / 上游原文 /
+// 账号与模型 / 完整时间与耗时——排障时一眼定位"为什么失败"。
+function callsDetail(e) {
+  const who = e.nick ? e.nick + '（' + e.uid + '）' : (e.uid || '—');
+  return '<tr class="detail"><td colspan="13"><dl class="dl">' +
+    '<dt>失败分类</dt><dd>' + esc(callsKindName(e.kind)) +
+      (e.kind ? ' <span class="note">' + esc(e.kind) + '</span>' : '') + '</dd>' +
+    '<dt>HTTP 状态</dt><dd class="mono">' + (e.status ? esc(String(e.status)) : '—') + '</dd>' +
+    '<dt>错误原文</dt><dd class="err">' +
+      esc(e.err || '（上游未返回错误体：可能是网络传输错误，或客户端主动断开）') + '</dd>' +
+    '<dt>账号</dt><dd class="mono">' + esc(who) + '</dd>' +
+    '<dt>模型</dt><dd class="mono">' + esc(e.model || '—') + '</dd>' +
+    '<dt>时间</dt><dd>' + esc(callsFullTime(e.t)) + '</dd>' +
+    '<dt>耗时</dt><dd>' + fmtMs(e.latency_ms) + '</dd>' +
+    '</dl></td></tr>';
+}
+
+function callsRow(e, open) {
+  const who = e.nick || (e.uid || '').slice(0, 8);
+  const cls = e.ok ? '' : ' class="fail' + (open ? ' open' : '') + '"';
+  const st = e.ok
+    ? '<span class="tag ok">成功</span>'
+    : '<span class="tag bad">失败</span><div class="cl-more">' +
+      (e.status ? 'HTTP ' + esc(String(e.status)) + ' · ' : '') + esc(callsKindName(e.kind)) +
+      (open ? ' · 收起' : ' · 查看') + '</div>';
+  const num = (v, cls2) => {
+    const n = Number(v || 0);
+    return '<td class="num' + (n ? ' ' + cls2 : ' zero') + '">' + (n ? fmtInt(n) : '0') + '</td>';
+  };
+  return '<tr' + cls + ' data-seq="' + esc(String(e.seq)) + '">' +
+    '<td class="mark" aria-hidden="true"><i></i></td>' +
+    '<td class="t" title="' + esc(callsFullTime(e.t)) + '">' + callsTime(e.t) + '</td>' +
+    '<td class="who"><div class="nm">' + esc(who) + '</div></td>' +
+    '<td>' + esc(e.realm || '') + '</td>' +
+    '<td class="mdl">' + esc(e.model || '—') + '</td>' +
+    '<td>' + st + '</td>' +
+    '<td class="num">' + fmtMs(e.latency_ms) + '</td>' +
+    num(e.prompt_tokens, '') +
+    num(e.cached_tokens, 'cch') +
+    num(e.reasoning_tokens, 'rsn') +
+    num(e.completion_tokens, '') +
+    num(e.total_tokens, '') +
+    '<td class="num">' + fmtCredits(e.credits) + '</td>' +
+    '</tr>';
+}
+
+// callsPageWindow 生成页码窗口：首尾常驻 + 当前页 ±1，中间折叠为省略号。
+// 阈值 10：300 条缓冲在 30/页时正好 10 页，全部平铺比「1 2 … 10」更好点。
+function callsPageWindow(cur, total) {
+  if (total <= 10) return Array.from({ length: total }, (_, i) => i + 1);
+  const out = [];
+  for (let p = 1; p <= total; p++) {
+    if (p === 1 || p === total || Math.abs(p - cur) <= 1) {
+      if (out[out.length - 1] !== p) out.push(p);
+    } else if (out[out.length - 1] !== '…') {
+      out.push('…');
+    }
+  }
+  return out;
+}
+
+// callsPagerHTML 页码条：‹ 1 … 5 [6] 7 … 13 ›（单页时返回空串，只留「每页行数」）。
+function callsPagerHTML() {
+  const total = callsPages;
+  if (total <= 1) return '';
+  const parts = ['<button class="pg" data-p="' + (callsPage - 1) + '"' +
+    (callsPage <= 1 ? ' disabled' : '') + ' title="上一页">‹</button>'];
+  callsPageWindow(callsPage, total).forEach(p => {
+    if (p === '…') parts.push('<span class="gap">…</span>');
+    else parts.push('<button class="pg' + (p === callsPage ? ' on' : '') + '" data-p="' + p + '">' + p + '</button>');
+  });
+  parts.push('<button class="pg" data-p="' + (callsPage + 1) + '"' +
+    (callsPage >= total ? ' disabled' : '') + ' title="下一页">›</button>');
+  return parts.join('');
+}
+
+function renderCalls() {
   const tb = $('callsBody');
   if (!tb) return;
+  const all = callsData.entries || [];
+  const cap = callsData.cap || 300;
+  // 清理滚动出缓冲的展开态，避免 Set 无界增长
+  const alive = new Set(all.map(e => String(e.seq)));
+  for (const k of Array.from(callsOpen)) if (!alive.has(k)) callsOpen.delete(k);
+
+  const list = all.filter(callsMatch);
+  // 切片：页码越界（筛选/新数据使页数变少）时收敛到最后一页，而不是显示空表。
+  callsPages = Math.max(1, Math.ceil(list.length / callsPageSize));
+  if (callsPage > callsPages) callsPage = callsPages;
+  if (callsPage < 1) callsPage = 1;
+  const from = (callsPage - 1) * callsPageSize;
+  const slice = list.slice(from, from + callsPageSize);
+
+  const html = [];
+  slice.forEach(e => {
+    const open = !e.ok && callsOpen.has(String(e.seq));
+    html.push(callsRow(e, open));
+    if (open) html.push(callsDetail(e));
+  });
+  tb.innerHTML = html.length ? html.join('') : '<tr><td colspan="13"><div class="empty"><div class="big">' +
+    (all.length ? '没有匹配的记录' : '还没有调用记录') + '</div>' +
+    (all.length ? '换一个关键字，或点「清除筛选」看全部 ' + all.length + ' 条'
+      : '发起一次对话后，这里会逐条列出每次请求的明细（最近 ' + cap + ' 条，仅内存保存）') +
+    '</div></td></tr>';
+  $('callsNote').textContent = list.length === all.length
+    ? all.length + ' 条 · 最近 ' + cap + ' 条上限'
+    : '显示 ' + list.length + ' / ' + all.length + ' 条';
+  const total = $('callsTotal');
+  if (total) {
+    total.textContent = list.length === all.length
+      ? '总计 ' + all.length + ' 条'
+      : '筛选后 ' + list.length + ' 条 / 共 ' + all.length + ' 条';
+  }
+  const pager = $('callsPager');
+  if (pager) pager.innerHTML = callsPagerHTML();
+  const hint = $('callsHint');
+  if (hint) hint.textContent = list.some(e => !e.ok) ? '点失败行可展开失败详情' : '';
+}
+
+async function loadCalls() {
+  if (!$('callsBody')) return;
   try {
     const d = await api('calls');
-    const list = d.entries || [];
-    tb.innerHTML = list.length ? list.map(e => {
-      const who = e.nick || (e.uid || '').slice(0, 8);
-      const cls = e.ok ? '' : ' class="off"';
-      const st = e.ok ? '<span class="tag ok">成功</span>'
-        : '<span class="tag bad">失败</span>' + (e.err ? '<div class="hint" style="color:var(--bad);font-size:11px;margin-top:2px">' + esc(e.err) + '</div>' : '');
-      const num = (v, cls2) => {
-        const n = Number(v || 0);
-        return '<td class="num' + (n ? ' ' + cls2 : ' zero') + '">' + (n ? fmtInt(n) : '0') + '</td>';
-      };
-      return '<tr' + cls + '>' +
-        '<td class="mark" aria-hidden="true"><i></i></td>' +
-        '<td class="t" title="' + esc(e.t || '') + '">' + callsTime(e.t) + '</td>' +
-        '<td class="who"><div class="nm">' + esc(who) + '</div></td>' +
-        '<td>' + esc(e.realm || '') + '</td>' +
-        '<td class="mdl">' + esc(e.model || '—') + '</td>' +
-        '<td>' + st + '</td>' +
-        '<td class="num">' + fmtMs(e.latency_ms) + '</td>' +
-        num(e.prompt_tokens, '') +
-        num(e.cached_tokens, 'cch') +
-        num(e.reasoning_tokens, 'rsn') +
-        num(e.completion_tokens, '') +
-        num(e.total_tokens, '') +
-        '<td class="num">' + fmtCredits(e.credits) + '</td>' +
-        '</tr>';
-    }).join('') : '<tr><td colspan="13"><div class="empty"><div class="big">还没有调用记录</div>' +
-      '发起一次对话后，这里会逐条列出每次请求的明细（最近 ' + (d.cap || 300) + ' 条，仅内存保存）</div></td></tr>';
-    $('callsNote').textContent = list.length + ' 条 · 最近 ' + (d.cap || 300) + ' 条上限';
+    callsData = { entries: d.entries || [], cap: d.cap || 300 };
+    renderCalls();
   } catch (e) { /* 概览已提示 */ }
 }
 if ($('btnCalls')) $('btnCalls').onclick = loadCalls;
+// 事件委托：tbody 每次重绘，监听挂在容器上不丢；过滤控件不重绘，输入焦点保持。
+if ($('callsBody')) $('callsBody').addEventListener('click', ev => {
+  const tr = ev.target.closest('tr.fail');
+  if (!tr) return;
+  const key = tr.dataset.seq || '';
+  if (callsOpen.has(key)) callsOpen.delete(key); else callsOpen.add(key);
+  renderCalls();
+});
+// 过滤条件变化一律回到第 1 页（否则会出现"筛选后停在一个空页"）。
+if ($('callsChips')) $('callsChips').addEventListener('click', ev => {
+  const btn = ev.target.closest('button.chip');
+  if (!btn) return;
+  callsFilter.state = btn.dataset.st || 'all';
+  callsPage = 1;
+  $('callsChips').querySelectorAll('.chip').forEach(b => b.classList.toggle('on', b === btn));
+  renderCalls();
+});
+if ($('callsField')) $('callsField').onchange = ev => { callsFilter.field = ev.target.value; callsPage = 1; renderCalls(); };
+if ($('callsQuery')) $('callsQuery').oninput = ev => { callsFilter.q = ev.target.value; callsPage = 1; renderCalls(); };
+if ($('callsClear')) $('callsClear').onclick = () => {
+  callsFilter.state = 'all'; callsFilter.field = ''; callsFilter.q = '';
+  callsPage = 1;
+  // 程序化改 value 不会触发 change，美化下拉的按钮文本要手动同步（beautifySelect 挂的 _sync）。
+  if ($('callsField')) { $('callsField').value = ''; if ($('callsField')._sync) $('callsField')._sync(); }
+  if ($('callsQuery')) $('callsQuery').value = '';
+  if ($('callsChips')) $('callsChips').querySelectorAll('.chip').forEach(b => b.classList.toggle('on', b.dataset.st === 'all'));
+  renderCalls();
+};
+// 页码：委托监听（页码条每次重绘，挂容器上才不丢）。
+if ($('callsPager')) $('callsPager').addEventListener('click', ev => {
+  const b = ev.target.closest('button.pg');
+  if (!b || b.disabled) return;
+  const p = Number(b.dataset.p);
+  if (!Number.isFinite(p) || p < 1 || p > callsPages || p === callsPage) return;
+  callsPage = p;
+  renderCalls();
+  // 翻页后把表格带回视野（分页条在表格下方，不滚动会看不出内容已换页）。
+  const tbl = $('callsBody').closest('table');
+  if (tbl && tbl.scrollIntoView) tbl.scrollIntoView({ block: 'nearest' });
+});
+// 每页行数（默认值来自 HTML 的 selected 项）。
+if ($('callsPageSize')) {
+  callsPageSize = Number($('callsPageSize').value) || 30;
+  $('callsPageSize').onchange = ev => {
+    const n = Number(ev.target.value);
+    if (Number.isFinite(n) && n > 0) callsPageSize = n;
+    callsPage = 1;
+    renderCalls();
+  };
+}
 
 /* ── Key 管理（托管 API 密钥）────────────────────────────────────── */
 /* 与主密钥（面板登录用，配置页维护）分工：托管密钥只用于调用 /v1/* 与 /status，
@@ -1838,7 +2043,7 @@ $('keysBody').addEventListener('click', async ev => {
     return;
   }
   if (a === 'copy') {
-    try { await navigator.clipboard.writeText(k.value); toast('密钥已复制', 'ok'); }
+    try { await copyText(k.value); toast('密钥已复制', 'ok'); }
     catch (e) { toast('复制失败，请点「显示」后手动选择', 'err'); }
     return;
   }
@@ -1903,7 +2108,7 @@ async function submitKeyNew() {
     revealedKeys.add(r.key.id); // 新建即展开：列表里可直接核对 / 手动复制
     closeKeyNew();
     let copied = false;
-    try { await navigator.clipboard.writeText(r.key.value); copied = true; }
+    try { await copyText(r.key.value); copied = true; }
     catch (e) { /* 剪贴板不可用（非 HTTPS 等）：列表已展开，手动选择复制 */ }
     toast(copied ? '密钥「' + name + '」已创建并复制到剪贴板' : '密钥「' + name + '」已创建（点「显示」查看完整值）', 'ok');
     loadKeys();

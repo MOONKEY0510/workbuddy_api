@@ -614,9 +614,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			unbindSticky()
 		}
 	}
+	// attemptFail 一次尝试的失败明细（nil = 成功）。供「调用记录」视图回答
+	// "这次到底为什么失败"：HTTP 状态 + 错误分类 + 上游/传输层原文。
+	type attemptFail struct {
+		Status int    // HTTP 状态（0 = 未走到响应，如传输层错误）
+		Kind   string // 错误分类（upstream.ErrKind 词表 / transport / upstream_parse）
+		Err    string // 错误原文（上游 body 或传输错误文案），入库侧截断
+	}
 	// credit/hasCredit：本次尝试的实扣积分（上游 usage.credit）。仅成功路径能拿到
 	// （流式末帧 / 非流式聚合 usage）；失败尝试没有，记 0。
-	recordAttempt := func(uid string, delta pool.TokenUsageDelta, started time.Time, credit float64, hasCredit bool) {
+	recordAttempt := func(uid string, delta pool.TokenUsageDelta, started time.Time, credit float64, hasCredit bool, fail *attemptFail) {
 		delta.Model = peek.Model
 		latency := time.Since(started)
 		latencyMs := latency.Milliseconds()
@@ -663,9 +670,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				HasReasoning:     delta.HasReasoningTokens,
 			}, delta.HasTotalTokens || delta.HasCompletionTokens || delta.HasPromptTokens)
 		}
-		// 逐请求明细流水（与用量同口径：ok = 上游给了 usage）。
+		// 逐请求明细流水（与用量同口径：ok = 上游给了 usage；握手失败则一律计失败）。
 		if h.cfg.Calls != nil {
-			h.cfg.Calls.Add(calls.Entry{
+			entry := calls.Entry{
 				UID:              uid,
 				Nick:             nick,
 				Realm:            realm,
@@ -679,7 +686,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				CacheWriteTokens: delta.CacheWriteTokens,
 				ReasoningTokens:  delta.ReasoningTokens,
 				Credits:          credit,
-			})
+			}
+			if fail != nil {
+				entry.OK = false
+				entry.Status = fail.Status
+				entry.Kind = fail.Kind
+				entry.Err = fail.Err
+			}
+			h.cfg.Calls.Add(entry)
 		}
 	}
 
@@ -813,7 +827,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 连败兜底（issue #114）：喂连败计数——连不上上游是「不知道原因的失败」，
 			// 连败 N 次临时出池，单次/偶发不罚（NoteFailures 内部达阈才动作）。
 			// 上游 client 已打 transport error 日志。
-			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false)
+			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false,
+				&attemptFail{Status: http.StatusServiceUnavailable, Kind: "transport", Err: terr.Error()})
 			st.status = http.StatusServiceUnavailable
 			lastErr = terr
 			h.cfg.Pool.NoteFailures(acct.UID)
@@ -824,7 +839,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if status >= 400 {
-			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false)
 			st.status = status
 			var kind upstream.ErrKind
 			if uerr != nil {
@@ -833,6 +847,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				kind = upstream.Classify(status, string(respBody))
 				uerr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody)}
 			}
+			// 失败明细入「调用记录」：状态 + 分类 + 上游原文（Add 侧截断兜底体积）。
+			// 放在 kind 判定之后——分类是面板详情里最有价值的一列。
+			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false,
+				&attemptFail{Status: status, Kind: kind.String(), Err: string(respBody)})
 			// 内容拦截误报（passthrough/append 模式首遇）：判定为 system 指纹误报，
 			// 触发降级到次日 00:00 CST，换 Degraded 中性提示词同请求内重试（append
 			// 降级重试同样退化为 replace——原文在场只会确定性再撞 400）。
@@ -928,6 +946,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			sErr := upstream.StreamHint(w, stats, upstream.FrameHintFunc(func() upstream.HintContext {
 				return h.hintContext(bareModel, reqHasImage)
 			}))
+			var streamFail *attemptFail
 			if upstream.IsEmptyStreamError(sErr) {
 				// 上游 200 但空流（0 有效帧）：StreamHint 已写 error 帧 + [DONE]
 				// 兜底（HTTP 头已发出只能 200），但这是上游缺陷不是成功——日志/
@@ -937,9 +956,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 502 观测没有意义）。
 				st.status = http.StatusBadGateway
 				log.Printf("WARN: [server] stream acct=%s model=%s: empty upstream stream (200+0 frames)", logfmt.Label(acct.UID, acct.Nickname), bareModel)
+				streamFail = &attemptFail{Status: http.StatusBadGateway, Kind: "upstream_parse",
+					Err: "empty upstream stream: HTTP 200 with no data frames"}
 			}
 			streamCredit, hasStreamCredit := stats.Credit()
-			recordAttempt(acct.UID, stats.Usage(), attemptStarted, streamCredit, hasStreamCredit)
+			recordAttempt(acct.UID, stats.Usage(), attemptStarted, streamCredit, hasStreamCredit, streamFail)
 			st.ttfb = stats.TTFB()
 			// usage 缺失时保留 chatStat.toks 的 -1 哨兵（观测缺失 → 显示 "-"），
 			// 不写入零值——否则「没观测到 usage」被伪造成「测得 0 token」，
@@ -960,14 +981,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		resp, err := upstream.Aggregate(rc)
 		rc.Close()
 		if err != nil {
-			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false)
+			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false,
+				&attemptFail{Status: http.StatusBadGateway, Kind: "upstream_parse", Err: err.Error()})
 			// 上游流解析失败：客户端还没看到任何输出，回 502 并告知原因。
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 			st.status = http.StatusBadGateway
 			return
 		}
 		aggCredit, hasAggCredit := usageCredit(resp)
-		recordAttempt(acct.UID, usageDeltaFromResponse(resp), attemptStarted, aggCredit, hasAggCredit)
+		recordAttempt(acct.UID, usageDeltaFromResponse(resp), attemptStarted, aggCredit, hasAggCredit, nil)
 		writeJSON(w, http.StatusOK, resp)
 		st.status = http.StatusOK
 		st.toks = completionTokens(resp)

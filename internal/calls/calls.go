@@ -34,7 +34,23 @@ type Entry struct {
 	ReasoningTokens  int64   `json:"reasoning_tokens"`   // 思考过程 token
 	Credits          float64 `json:"credits"`            // 实扣积分
 
-	Err string `json:"err,omitempty"` // 失败原因（传输错误 / 上游分类），成功为空
+	Err string `json:"err,omitempty"` // 失败原因（传输错误 / 上游原文），成功为空
+	// Kind 失败分类（与 upstream.ErrKind 同词表：soft_rate / waf_block /
+	// content_blocked / transport / upstream_parse …）。面板据此给出可读归类，
+	// 比裸 HTTP 状态更能说明"为什么失败"。成功为空。
+	Kind string `json:"kind,omitempty"`
+}
+
+// maxErrLen 单条记录保留的错误原文上限（字节）。上游错误体可能是长 HTML
+// 错误页，全文入库会让 300 条环形缓冲的体积失控；截断只影响排障观感。
+const maxErrLen = 600
+
+// truncate 按字节截断（附省略号），供写入侧统一收口。
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // Ring 固定容量的环形缓冲，并发安全。
@@ -66,6 +82,7 @@ func (r *Ring) Add(e Entry) {
 	if e.T == "" {
 		e.T = time.Now().Format(time.RFC3339)
 	}
+	e.Err = truncate(e.Err, maxErrLen)
 	if len(r.buf) < r.size {
 		r.buf = append(r.buf, e)
 	} else {

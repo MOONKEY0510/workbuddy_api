@@ -366,6 +366,41 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .acc.cl .cch { color: var(--ok); }
 .acc.cl .rsn { color: var(--accent); }
 .acc.cl .zero { color: var(--ink-3); }
+/* 调用记录：过滤条 + 失败详情展开（失败行可点开看"为什么失败"） */
+.acc.cl tbody tr.fail { cursor: pointer; }
+.acc.cl tbody tr.fail:hover { background: var(--surface-2); }
+.acc.cl tbody tr.fail .mark i { background: var(--bad); }
+.acc.cl tbody tr.fail .cl-more { font-size: 11px; color: var(--bad); margin-top: 2px; white-space: nowrap; }
+.acc.cl tbody tr.detail > td { background: var(--surface-2); border-bottom: 1px solid var(--line); padding: 10px 14px; }
+.dl { display: grid; grid-template-columns: max-content 1fr; gap: 5px 14px; font-size: 12.5px; align-items: baseline; }
+.dl dt { color: var(--ink-3); white-space: nowrap; }
+.dl dd { margin: 0; word-break: break-word; }
+.dl dd.mono { font-family: var(--mono); font-size: 12px; }
+.dl dd.err { font-family: var(--mono); font-size: 12px; color: var(--bad); white-space: pre-wrap; }
+.fbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 9px 12px; border-bottom: 1px solid var(--line-soft); }
+.fbar .lbl { font-size: 11px; letter-spacing: .05em; color: var(--ink-3); }
+.fbar select, .fbar input {
+  font: inherit; font-size: 12.5px; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r-xs); padding: 4px 8px;
+}
+.fbar input { min-width: 190px; }
+.fbar select:focus, .fbar input:focus { outline: none; border-color: var(--accent-line); }
+/* 调用记录分页条：左「总计 N 条」· 中「每页行数」· 右页码（‹ 1 … 5 [6] 7 … 13 ›） */
+.pager {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; border-top: 1px solid var(--line-soft);
+}
+.pager .lbl { font-size: 11px; letter-spacing: .05em; color: var(--ink-3); }
+.pgs { display: inline-flex; align-items: center; gap: 4px; }
+.pgs .pg {
+  min-width: 26px; height: 26px; padding: 0 7px; font: inherit; font-size: 12.5px;
+  color: var(--ink-2); background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: var(--r-xs); cursor: pointer; line-height: 1;
+}
+.pgs .pg:hover:not(:disabled):not(.on) { border-color: var(--accent-line); background: var(--surface-3); color: var(--ink); }
+.pgs .pg.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); font-weight: 550; }
+.pgs .pg:disabled { opacity: .4; cursor: default; }
+.pgs .gap { color: var(--ink-3); font-size: 12.5px; padding: 0 1px; }
 .who { min-width: 118px; max-width: 200px; }
 #taskTable .who { max-width: 360px; }
 #taskTable .who .nm, #taskTable .who .id { white-space: normal; word-break: break-all; }
@@ -929,9 +964,30 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
         <header>
           <h3>调用记录</h3>
           <span class="grow"></span>
+          <span class="chips" id="callsChips">
+            <button class="xs chip on" data-st="all">全部</button>
+            <button class="xs chip" data-st="fail">只看失败</button>
+            <button class="xs chip" data-st="ok">只看成功</button>
+          </span>
           <span class="note" id="callsNote">—</span>
           <button class="xs" id="btnCalls">刷新</button>
         </header>
+        <div class="fbar">
+          <span class="lbl">字段过滤</span>
+          <select id="callsField" class="xs" title="选择要过滤的字段（不选则跨字段搜索）">
+            <option value="">全部字段</option>
+            <option value="who">账号</option>
+            <option value="model">模型</option>
+            <option value="realm">域</option>
+            <option value="status">状态码</option>
+            <option value="kind">失败分类</option>
+            <option value="err">失败原因</option>
+          </select>
+          <input id="callsQuery" placeholder="输入关键字，输入即过滤" autocomplete="off">
+          <button class="xs" id="callsClear">清除筛选</button>
+          <span class="grow"></span>
+          <span class="note" id="callsHint"></span>
+        </div>
         <div class="tbl-wrap">
           <table class="acc cl">
             <thead><tr>
@@ -942,6 +998,18 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
             </tr></thead>
             <tbody id="callsBody"></tbody>
           </table>
+        </div>
+        <div class="pager">
+          <span class="note" id="callsTotal">总计 —</span>
+          <span class="grow"></span>
+          <span class="lbl">每页行数</span>
+          <select id="callsPageSize" class="xs">
+            <option value="20">20</option>
+            <option value="30" selected>30</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+          <span class="pgs" id="callsPager"></span>
         </div>
       </div>
     </section>
