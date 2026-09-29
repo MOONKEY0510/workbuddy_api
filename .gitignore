@@ -44,11 +44,12 @@ scripts/__pycache__/
 .vscode/
 .codebuddy/
 
-# 设计 / 计划 / 逆向工作文档（README.md 与源码内嵌提示词必须进版本库）
+# 设计 / 计划 / 逆向工作文档（README.md、源码内嵌提示词与 docs/ 下的正式文档必须进版本库）
 *.md
 !README.md
 !internal/prompt/defaultprompt.md
-docs/
+# docs/：面向用户的正式文档（由 README 拆分而来），放行其中的 .md
+!docs/*.md
 LOOP.md
 PLAN.md
 SPEC.md
