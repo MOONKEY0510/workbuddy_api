@@ -864,8 +864,8 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 
 ### 3. 发布来源与合规边界
 
-- **产物全部由 CI 从源码构建**：仓库不含提交的二进制；打 `v*` tag 时 `go-binaries` 工作流构建五平台二进制（Windows amd64 / Linux amd64·arm64 / macOS amd64·arm64）并附 `checksums.txt` 发布到 Release，tag 与源码 `appVersion` 不一致会直接构建失败
-- **容器镜像**：`docker-ghcr` 工作流在 push `main` / 打 tag 时构建多架构镜像（amd64 / arm64）并推送 GHCR，PR 仅构建验证不推送
+- **产物全部由 CI 从源码构建**：仓库不含提交的二进制；打 `v*` tag 时 `go-binaries` 工作流构建五平台二进制（Windows amd64 / Linux amd64·arm64 / macOS amd64·arm64）并附 `checksums.txt` 发布到 Release，tag 与源码 `appVersion` 不一致会直接构建失败（`appVersion` 的 `-zhima` 后缀是本仓库的定制标识，比对 tag 前由 CI 剥掉，同时兼容上游的 `-panel`；面板侧栏显示的即该版本串）
+- **容器镜像**：`docker-ghcr` 工作流在打 `v*` tag / 手动触发时构建多架构镜像（amd64 / arm64）并推送 GHCR（不再随 push `main` 出镜像，省 Action 配额；手动在默认分支触发会额外推 `latest`），PR 仅构建验证不推送
 - **不引用第三方产物**：依赖仅由 `go.mod` / `go.sum` 约束；镜像基于官方 `golang` / `alpine` 基础镜像 + 仓库内 Dockerfile 多阶段构建，本地 `docker compose build` 与 CI 同源
 - 登录 / 签到 / 积分工具：`./login.sh` / `./signin.sh` / `./credit.sh`
 - 上游 CodeBuddy 属腾讯系商业产品，本项目是其**非官方 OpenAI 兼容网关**；使用其账号做 API 网关涉及目标平台服务条款与账号风险，作者不对账号封禁、条款违约或使用结果负责

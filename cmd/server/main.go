@@ -31,8 +31,12 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
 )
 
-// appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "1.11.7-panel"
+// appVersion 网关版本。自 1.12.0 起由本仓库独立维护（1.11.x 为上游基线时代），
+// 按语义化版本递增：功能新增走 minor、修复走 patch；-zhima 是项目的标识后缀。
+//
+// 透出到 /panel/api/overview（面板侧栏显示 v1.12.0-zhima）与 CI 的一致性断言
+// （.github/workflows/go-binaries.yml：二进制必须含本串、tag 必须等于剥掉后缀的版本）。
+const appVersion = "1.12.0-zhima"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。

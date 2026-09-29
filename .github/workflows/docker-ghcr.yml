@@ -1,12 +1,12 @@
 name: docker-ghcr
 
 # 多架构镜像（amd64/arm64）自动构建并发布到 ghcr.io：
-#   - push 到 main / 打 v* tag / 手动触发 → 构建并推送
+#   - 打 v* tag / 手动触发 → 构建并推送（不再随 push main 出镜像：多架构 QEMU
+#     构建一次 5~10 分钟，日常提交无需重复产出，省 Action 配额）
 #   - PR 触碰构建相关文件 → 仅构建验证，不推送
-# tag 说明：main 推 latest + main + sha-xxxxxx；v1.2.3 推 1.2.3 / 1.2 / 1
+# tag 说明：v1.2.3 推 1.2.3 / 1.2 / 1 + sha-xxxxxx；手动在默认分支上触发时额外推 latest
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   pull_request:
     paths:

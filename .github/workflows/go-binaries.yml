@@ -79,7 +79,8 @@ jobs:
       - name: 打包（windows=zip 三件套，其余=tar.gz）
         run: |
           V="${{ steps.ver.outputs.v }}"
-          V="${V%-panel}"   # 文件名不带 -panel 后缀（wb2api-panel-v1.2.3-... 既有惯例）
+          # 文件名不带版本后缀（wb2api-panel-v1.2.3-... 既有惯例），剥掉 -zhima 标识
+          V="${V%-zhima}"
           case "${{ matrix.goos }}" in
             windows)
               NAME="wb2api-panel-v${V}-windows-amd64.zip"
@@ -112,7 +113,8 @@ jobs:
       - name: tag 与源码版本一致性断言
         run: |
           SRC=$(grep -oP 'appVersion = "\K[^"]+' cmd/server/main.go)
-          SRC="${SRC%-panel}"   # appVersion 带 -panel 后缀，比对前剥掉
+          # appVersion 带 -zhima 标识后缀，比对前剥掉（tag 保持干净数字）
+          SRC="${SRC%-zhima}"
           TAG="${GITHUB_REF_NAME#v}"
           if [[ "$GITHUB_REF_NAME" != *-ci ]]; then
             if [[ "$TAG" != "$SRC" ]]; then
@@ -135,7 +137,7 @@ jobs:
           echo "prev=${PREV}" >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.ref_name }}-panel
+          name: ${{ github.ref_name }}-zhima
           prerelease: ${{ contains(github.ref_name, '-') }}
           body: |
             CI 自动构建发布（五平台二进制 + checksums）。

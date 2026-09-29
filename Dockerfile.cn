@@ -10,7 +10,7 @@
 #     --build-arg HTTP_PROXY= --build-arg HTTPS_PROXY= \
 #     --build-arg http_proxy= --build-arg https_proxy= \
 #     --build-arg "NO_PROXY=*" --build-arg "no_proxy=*" \
-#     -t workbuddy2api:1.11.7-panel -t workbuddy2api:latest .
+#     -t workbuddy2api:1.12.0-zhima -t workbuddy2api:latest .
 
 FROM golang:1.25-alpine AS build
 ARG HTTP_PROXY
