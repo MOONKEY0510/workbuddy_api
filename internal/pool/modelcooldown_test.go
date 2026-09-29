@@ -91,13 +91,14 @@ func TestCooldownSoftForModelDoesNotClobberUntil(t *testing.T) {
 	}
 }
 
-// TestCooldownSoftForModelCapsUntilKeepsResetAt 6004 写 modelCooldowns：
-// until 截断到 soft_rate_max，reset_at 保留上游原始墙钟（issue #36 台账语义迁移）。
-func TestCooldownSoftForModelCapsUntilKeepsResetAt(t *testing.T) {
+// TestCooldownSoftForModelKeepsResetExact 6004 的 Until **直接采信上游重置墙钟**：
+// 即使超出账号级 soft_rate_max 也不截断（6004 重置窗口常达数小时，截断会提前解冻、
+// 解冻即再撞 429）。model_rate_max 未配置 = 不封顶。
+func TestCooldownSoftForModelKeepsResetExact(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
-	p.SetSoftRateMax(10 * time.Minute)
-	reset := time.Now().Add(2 * time.Hour) // 远超封顶 → until 截断到 10m，reset_at 保留 2h
+	p.SetSoftRateMax(10 * time.Minute) // 账号级封顶：不参与模型级截断
+	reset := time.Now().Add(2 * time.Hour)
 	p.CooldownSoftForModel("u1", 600*time.Second, reset, "glm-5.3", "6004 model rate limit")
 	p.mu.RLock()
 	mc, ok := p.byUID["u1"].modelCooldowns["glm-5.3"]
@@ -105,11 +106,88 @@ func TestCooldownSoftForModelCapsUntilKeepsResetAt(t *testing.T) {
 	if !ok {
 		t.Fatal("modelCooldowns 缺少 glm-5.3")
 	}
-	if rem := mc.Until.Sub(time.Now()); rem <= 0 || rem > 10*time.Minute+time.Second {
-		t.Errorf("Until 应在 (0,10m] 区间，实际剩余 %v", rem)
+	if d := mc.Until.Sub(reset); d < -time.Second || d > time.Second {
+		t.Errorf("Until=%v want ~上游墙钟 %v（不得被 soft_rate_max=10m 截断）", mc.Until, reset)
 	}
 	if d := mc.ResetAt.Sub(reset); d < -time.Second || d > time.Second {
-		t.Errorf("ResetAt=%v want ~2h 后=%v", mc.ResetAt, reset)
+		t.Errorf("ResetAt=%v want ~%v", mc.ResetAt, reset)
+	}
+}
+
+// TestCooldownSoftForModelCappedByModelRateMax 只有显式配置 model_rate_max 才封顶
+// （防上游给出异常远时刻把该组合长期锁死）；soft_rate_max 不参与模型级截断。
+func TestCooldownSoftForModelCappedByModelRateMax(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	p.SetSoftRateMax(10 * time.Minute)
+	p.SetModelRateMax(30 * time.Minute)
+	reset := time.Now().Add(3 * time.Hour)
+	p.CooldownSoftForModel("u1", 600*time.Second, reset, "glm-5.3", "6004 model rate limit")
+	p.mu.RLock()
+	mc := p.byUID["u1"].modelCooldowns["glm-5.3"]
+	p.mu.RUnlock()
+	if rem := mc.Until.Sub(time.Now()); rem <= 0 || rem > 30*time.Minute+time.Second {
+		t.Errorf("Until 剩余=%v want 截断到 model_rate_max=30m", rem)
+	}
+	if d := mc.ResetAt.Sub(reset); d < -time.Second || d > time.Second {
+		t.Errorf("ResetAt 应保留上游原始墙钟: %v want %v", mc.ResetAt, reset)
+	}
+}
+
+// TestCooldownSoftForModelNoResetStaysModelLevel 6004 无重置文案 → **模型级**有界
+// 退避（base 起、按该模型 Hits 翻倍），账号级 until/softStreak 一律不动。
+func TestCooldownSoftForModelNoResetStaysModelLevel(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	p.CooldownSoftForModel("u1", time.Minute, time.Time{}, "glm-5.3", "6004 model rate limit")
+	st, _ := p.Status("u1")
+	if st.Cooling {
+		t.Fatalf("无文案的 6004 不应触发账号级冷却: %+v", st)
+	}
+	if len(st.RateLimitedModels) != 1 || st.RateLimitedModels[0].Model != "glm-5.3" {
+		t.Fatalf("应写模型级台账: %+v", st.RateLimitedModels)
+	}
+	if rem := time.Until(st.RateLimitedModels[0].Until); rem <= 0 || rem > time.Minute+time.Second {
+		t.Errorf("模型冷却剩余=%v want ~base=1m", rem)
+	}
+	// 冷却中再撞（兜底探测）：不推进/不延长（口径同账号级"冷却中不翻倍"）。
+	p.CooldownSoftForModel("u1", time.Minute, time.Time{}, "glm-5.3", "6004 model rate limit")
+	st2, _ := p.Status("u1")
+	if rem := time.Until(st2.RateLimitedModels[0].Until); rem > time.Minute+time.Second {
+		t.Errorf("冷却中重复命中不应延长: 剩余 %v", rem)
+	}
+}
+
+// TestModelBlockSummary 模型限额摘要：受限账号数 / 最早恢复时刻 / 忽略模型限额后
+// 账号级仍可用的号数（handler 据此把「该模型无可用账号」判成 429 而非 503）。
+func TestModelBlockSummary(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	p.Add(&auth.Auth{UID: "u2"})
+	p.Add(&auth.Auth{UID: "u3"})
+	p.Disable("u3", "test disabled")
+	early := time.Now().Add(10 * time.Minute)
+	late := time.Now().Add(2 * time.Hour)
+	p.CooldownSoftForModel("u1", time.Minute, early, "glm-5.3", "6004 model rate limit")
+	p.CooldownSoftForModel("u2", time.Minute, late, "glm-5.3", "6004 model rate limit")
+
+	limited, earliest, healthyIgnoring := p.ModelBlockSummary("glm-5.3")
+	if limited != 2 {
+		t.Errorf("limited=%d want 2", limited)
+	}
+	if d := earliest.Sub(early); d < -time.Second || d > time.Second {
+		t.Errorf("earliest=%v want 最早的 %v", earliest, early)
+	}
+	if healthyIgnoring != 2 {
+		t.Errorf("healthyIgnoring=%d want 2（u1/u2 账号级皆健康，u3 禁用不计）", healthyIgnoring)
+	}
+	// 其它模型不受影响
+	if l, _, _ := p.ModelBlockSummary("hy3-x"); l != 0 {
+		t.Errorf("其它模型不应有受限账号: %d", l)
+	}
+	// 空模型名（无法归因）→ 全零
+	if l, _, h := p.ModelBlockSummary(""); l != 0 || h != 0 {
+		t.Errorf("空模型名应返回零值: %d %d", l, h)
 	}
 }
 

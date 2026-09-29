@@ -39,7 +39,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 |---|---|
 | 🔑 **OAuth 一键登录** | `login.sh` 设备授权流程，自动落盘凭证并重启容器加载新账号 |
 | 🔄 **多账号池** | 三因子加权随机选号（积分占比 ×10 + 闲置补偿 + 成功率 ×3），Top-5 候选 + 防惊群 |
-| 🛡️ **熔断与冷却** | 429 软冷却 600s 起指数退避（封顶 `soft_rate_max`）、404 固定 60s 短冷却、402 硬冷却至次日 04:00、连续失败熔断、在途租约限流 |
+| 🛡️ **熔断与冷却** | 429 软冷却 600s 起指数退避（封顶 `soft_rate_max`，**账号级**）、**模型级 6004 只锁「账号 × 模型」并精确冷到上游重置墙钟**（见[常见问题](#429-code6004模型级限流的冷却语义)）、404 固定 60s 短冷却、402 硬冷却至次日 04:00、连续失败熔断、在途租约限流 |
 | 🧲 **会话粘性** | 同一会话（`conversation_id`）尽量绑定同一账号，TTL 滚动续期，失败自动解绑，可镜像 Redis 防重启丢失 |
 | ⏰ **定时任务** | 六类独立排程、各有开关：签到（09/21 点，末尾自动跑**连登管家**：兑换已解锁档位 + 抽完抽奖次数）、活跃上报（10 点，点亮连登 / 解锁领养 + streak 自检）、猫猫旅行（09/21 点）、token 保活（22 点）、夜猫子补足（23 点，先查进度再决定是否补 glm-5.2 短对话）、成长任务队列（01 点，Sequential 族零点解锁后自动扫描执行） |
 | ⚡ **流式 + 非流式** | 出站强制 `stream:true`；SSE 帧按规范白名单重建；非流式由本地聚合为单响应 |
@@ -184,6 +184,7 @@ WorkBuddy2API 是一个自托管的 **OpenAI 兼容反向代理网关**，将腾
 | **API 密钥管理（新）** | 侧边栏新增「Key 管理」视图，把「调用凭证」与「面板登录凭证」解耦。`internal/keys`（托管密钥库：`data/api_keys.json` 0600 原子落盘、常量时间校验、`last_used` 防抖落盘、上限 50 枚）+ `internal/panel/keys.go`（`GET/POST /panel/api/keys`、`/{id}/update`、`/{id}/remove`）+ 前端视图与 `internal/server/handler.go`（`authorize`：主密钥或任一启用托管密钥）。**权限边界**：托管密钥只授权 `/v1/*`、`/status`，面板管理面只认主密钥——避免「调用凭证 → 管理面」的权限升级 |
 | **`Dockerfile.cn`（受限网络构建版）** | 与原 Dockerfile 产物等价，仅构建期适配国内 / 受限网络：Go 模块走 `goproxy.cn`、Alpine 包走 USTC 镜像、省略 `# syntax` 指令避免额外拉取 `dockerfile` frontend 镜像、声明并透传 `HTTP_PROXY` 等 ARG 以便清空 Docker Desktop 注入的不可达代理。用法见文件头部注释 |
 | **多协议入口（新）** | 新增 `internal/convert`（Anthropic Messages / OpenAI Responses / Gemini generateContent ⇄ OpenAI Chat Completions 双向转换，含流式事件编码）与 `internal/server/protocol.go`（`/v1/messages`、`/v1/messages/count_tokens`、`/v1/responses`、`/v1beta/models/{model}:*` 四个入口 + 管道复用既有 `chatCompletions`）；`internal/httpauth` 新增 `VerifyToken` 供 `x-api-key` / `x-goog-api-key` / `?key=` 凭证位置兼容。既有 `/v1/chat/completions` 行为零改动 |
+| **模型级限流：精确冷却 + 可视化（新）** | 6004（模型级用量限流）只停「该账号 × 该模型」：冷却截止**直接采信上游「将在 … 重置」墙钟**，不再被账号级 `soft_rate_max` 截断——6004 的重置窗口常达数小时，截断会提前解冻、解冻即再撞 429（实测：01:33 撞限、上游说 03:46 重置，旧逻辑冷到 03:33）。新增 `cooldown.model_rate_max` 可选封顶（默认空 = **不封顶**，面板可改、热生效）。6004 判定**前置**：即使文案缺失/变体也只做模型级有界退避，账号级状态一律不动。该模型全池无号可用时回 **429 + 原因说明**（受限号数 / 最早恢复时刻 / 建议换模型），不再笼统 503。面板账号池新增「模型限流 ×N」标签与**逐行明细**（模型名 + 恢复时刻，多模型同时限额各占一行，>3 折叠，悬停见完整台账）。落点：`internal/pool/cooldown.go`（`CooldownSoftForModel` / `cappedModelUntilLocked` / `ModelBlockSummary`）、`internal/server/handler.go`（`applyErrorPolicy` / 选号失败归因）、`internal/panel/app.js`（`rlmRows` / `hmClock`） |
 
 ### 面板前端改造（`internal/panel/index.html` · `internal/panel/app.js`）
 
@@ -413,7 +414,8 @@ curl -s http://localhost:7863/v1/chat/completions \
 | `state_file` | `./data/state.json` | 账号池状态持久化文件 |
 | `server.max_body_mb` | `128` | 聊天请求体上限（MB）：超限在读入前 / 读入中即 413（内存放大兜底）；`0` = 不限（完整读入转发，对齐上游旧行为）。属装配期字段，改后需重启 |
 | `cooldown.soft_rate` | `600s` | 软限流（429 / 限流文案）冷却基数；同一账号连续触发按 2 倍指数退避 |
-| `cooldown.soft_rate_max` | `2h` | 软冷却指数退避封顶 |
+| `cooldown.soft_rate_max` | `2h` | 软冷却指数退避封顶（**账号级**；不参与模型级 6004 冷却的截断） |
+| `cooldown.model_rate_max` | 空 | 模型级（6004）冷却的**可选**封顶：空或 `0` = **不封顶**（默认，直接采信上游「将在 … 重置」的墙钟）。仅在担心上游给出异常远时刻时配置（如 `24h`） |
 | `schedule.checkin_hours` | `[9, 21]` | 每日本地时区整点签到 + 余额查询解冻。空数组 / `null` = 未配置回落默认（不是禁用） |
 | `schedule.travel_hours` | `[9, 21]` | 每日本地时区整点推进猫猫旅行状态机（领养 / 派出 / 领奖） |
 | `schedule.activity_hours` | `[10]` | 每日本地时区整点对话活跃上报（点亮连登 + 解锁 `first_buddy`） |
@@ -473,7 +475,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 
 加载顺序：JSON 文件 → `WB2A_*` 环境变量（变量非空才覆盖）：
 
-`WB2A_LISTEN` · `WB2A_API_KEY` · `WB2A_AUTH_DIR` · `WB2A_STATE_FILE` · `WB2A_SOFT_RATE`(duration) · `WB2A_SOFT_RATE_MAX`(duration) · `WB2A_TIMEOUT_SECONDS` · `WB2A_HEADER_TIMEOUT_SECONDS` · `WB2A_IDLE_TIMEOUT_SECONDS` · `WB2A_USER_AGENT` · `WB2A_CLIENT_VERSION` · `WB2A_CLI_VERSION` · `WB2A_CLIENT_NAME` · `WB2A_DEVICE_TOKEN` · `WB2A_DEVICE_TOKEN_FILE` · `WB2A_PASSTHROUGH_IP`(bool) · `WB2A_SANITIZE_FINGERPRINTS`(bool) · `WB2A_PROMPT_MODE` · `WB2A_PROMPT_FILE` · `WB2A_EXPIRING_SOON`(duration)
+`WB2A_LISTEN` · `WB2A_API_KEY` · `WB2A_AUTH_DIR` · `WB2A_STATE_FILE` · `WB2A_SOFT_RATE`(duration) · `WB2A_SOFT_RATE_MAX`(duration) · `WB2A_MODEL_RATE_MAX`(duration) · `WB2A_TIMEOUT_SECONDS` · `WB2A_HEADER_TIMEOUT_SECONDS` · `WB2A_IDLE_TIMEOUT_SECONDS` · `WB2A_USER_AGENT` · `WB2A_CLIENT_VERSION` · `WB2A_CLI_VERSION` · `WB2A_CLIENT_NAME` · `WB2A_DEVICE_TOKEN` · `WB2A_DEVICE_TOKEN_FILE` · `WB2A_PASSTHROUGH_IP`(bool) · `WB2A_SANITIZE_FINGERPRINTS`(bool) · `WB2A_PROMPT_MODE` · `WB2A_PROMPT_FILE` · `WB2A_EXPIRING_SOON`(duration)
 
 ## 核心行为语义
 
@@ -507,7 +509,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 | 分类 | 触发条件 | 账号处置 | 恢复 |
 |---|---|---|---|
 | 余额不足 | HTTP 402 / body 含余额关键词 | 硬冷却到**次日 04:00**（本地时区） | 签到（09/21 点）余额恢复自动解冻 |
-| 频控 | HTTP 429 / 限流文案（不限状态码） | 软冷却 `soft_rate`（600s 起，连续触发指数退避，封顶 `soft_rate_max`）。**`code 6004`（模型级）带「将在 … 重置」时**冷却到上游重置墙钟并豁免切模型（见[常见问题](#429-code6004模型级限流的冷却语义)） | 到期自动恢复 / 成功清零退避 |
+| 频控 | HTTP 429 / 限流文案（不限状态码） | 账号级软冷却 `soft_rate`（600s 起，连续触发指数退避，封顶 `soft_rate_max`）。**`code 6004`（模型级）** 一律只停「该账号 × 该模型」：带「将在 … 重置」时精确冷到该墙钟（不封顶，见 `cooldown.model_rate_max`），无文案走模型级有界退避（见[常见问题](#429-code6004模型级限流的冷却语义)） | 到期自动恢复 / 成功清零退避 |
 | Session 失效 | body 含 `Offline user session not found` / `12153` | **连续 3 次**才永久禁用（一次 12153 多为临时抖动：网络 / 闪断 / refresh 竞态）；刷新成功 / 任意成功 / 手工复活清计数 | 人工重新登录（`login.sh`）或 `ReviveDisabled` 复活 |
 | 上游 404 | HTTP 404 | 软冷却固定 60s（不随 `soft_rate`、不单独退避） | 到期自动恢复 |
 | 服务端错误 | HTTP ≥500 | 喂连续失败计数，达阈值熔断 | 熔断到期 / 成功清零 |
@@ -622,7 +624,7 @@ http://127.0.0.1:7863/panel/
 
 | 视图 | 功能 |
 |---|---|
-| **账号池** | 统计条（总数/可用/冷却/禁用/可用积分合计/粘性会话）+ 账号表：状态标签（可用/限流冷却/积分冷却/熔断/已禁用）、积分量条、成功失败计数、在途、单号操作（签到/余额/任务/解冻/禁用/移除）；批量「全部签到」「旅行巡检」「活跃上报」「全部保活」。**顶部「添加账号」**弹窗含两个页签：浏览器登录（CN / Global 版本可选，设备授权 → 凭证落盘 → **热加载进池，免重启**；国际版登录后自动完成注册地区、激活与试用额度领取）与导入 JSON（账号数组批量导入） |
+| **账号池** | 统计条（总数/可用/冷却/禁用/可用积分合计/粘性会话）+ 账号表：状态标签（可用/限流冷却/积分冷却/熔断/已禁用）、积分量条、成功失败计数、在途、单号操作（签到/余额/任务/解冻/禁用/移除）；批量「全部签到」「旅行巡检」「活跃上报」「全部保活」。**模型级限额可见**：对被 6004 限流的模型打「模型限流 ×N」标签并逐行列出行名与恢复时刻（多模型同时限额各占一行，>3 折叠为「…等 N 个模型」，跨天恢复时刻带日期，悬停看完整台账）——账号级仍显示「可用」，避免误读成整个号被停。**顶部「添加账号」**弹窗含两个页签：浏览器登录（CN / Global 版本可选，设备授权 → 凭证落盘 → **热加载进池，免重启**；国际版登录后自动完成注册地区、激活与试用额度领取）与导入 JSON（账号数组批量导入） |
 | **用量** | 用量总览：按时间窗（24 小时 / 3 天 / 7 天 / 30 天 / 全部历史）聚合请求数、失败数、输入输出 token、缓存命中与写入、思考 token、实扣积分、平均延迟与 TPS，并按域 / 账号 / 模型下钻 |
 | **调用记录** | 逐请求明细流水（时间 / 账号 / 域 / 模型 / 状态 / 耗时 / 输入 / 缓存命中 / 思考 / 输出 / 合计 / 积分），回答「刚才那次请求到底发生了什么」；分页浏览（每页 20 / 30 / 50 / 100 可选），支持字段过滤与成功 / 失败快捷筛选，**点失败行展开失败详情**（错误分类 + HTTP 状态 + 上游错误原文） |
 | **积分构成** | **账号对比**：来源分组卡片（色点 + 名称 + 个数 + 剩余/总额 + 进度条），点组展开逐包明细（剩余/额度/到期时间）；点卡片标题可筛选下方列表 → **积分到期分布**：横向分段柱状图（灰轨道 = 本行额度合计，绿段 = 各包剩余占比——额度未动即占满、消耗越多灰缺口越大，剩余 0 的包不占位；悬停出信息卡；≤30 天逐天、更长并入「30+ 天」）→ **包明细**：专门逐包列表，**按需加载**（默认不渲染，选账号或点卡片标题后显示；「全部账号」按到期升序、单账号按面额降序，≤3 天到期标红 / ≤7 天标黄） |
@@ -636,7 +638,7 @@ http://127.0.0.1:7863/panel/
 
 > 其中「**调用记录**」视图，以及「用量」的缓存命中 / 思考 token / 积分维度与趋势图重写，为**本仓库二开新增**（上游面板没有），详见 [本仓库的二开改动](#-本仓库的二开改动)。
 
-**配置热生效**：保存配置后，`api_key`、`cooldown.soft_rate` / `soft_rate_max`、`features.sanitize_blacklist_fingerprints`、
+**配置热生效**：保存配置后，`api_key`、`cooldown.soft_rate` / `soft_rate_max` / `model_rate_max`、`features.sanitize_blacklist_fingerprints`、
 `pool.*`（熔断/在途/权重/降权/探索窗口）、`schedule.*`（六类时点 / 开关 / 余额刷新间隔）**立即生效，无需重启**；
 装配期依赖的字段（`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds` / `header_timeout_seconds` / `idle_timeout_seconds`、
 `upstash.*`、`session_sticky.ttl` / `gc_interval`）保存后会提示"需重启进程生效"。配置写入采用「深合并且原子替换」：
@@ -881,9 +883,11 @@ python3 scripts/probe_max_tokens.py   --base http://127.0.0.1:7863/v1 --key sk-x
 
 上游 `429` + `code 6004` 是**该模型的使用量超限**（msg 通常带「将在 YYYY-MM-DD HH:MM:SS UTC+8 重置」），**不是账号整体被限流**。网关的处理：
 
-- **冷却到上游重置时间**：msg 带「将在 … 重置」时，账号冷却 `until` 精确等于该墙钟（按 UTC+8 解释），并封顶 `soft_rate_max`（默认 2h）
-- **切模型立即可用**：冷却由 6004 触发时会记录触发模型；同一账号改用**其他模型**请求时视为可用。同模型或未记录模型的冷却回到现状
-- **退回指数退避**：6004 无「将在 … 重置」文案，或非 6004 的普通软限流 → 仍是 `soft_rate`（600s 起，连续触发指数退避，封顶 `soft_rate_max`）
+- **只停「该账号 × 该模型」这一个组合**：冷却写进 `modelCooldowns[model]`，**不碰账号级 `until`**——同一账号的其它模型、池里的其它账号都不受影响
+- **冷却截止 = 上游给的墙钟**：msg 带「将在 … 重置」时按 UTC+8 解释后**直接采信**，不再被 `soft_rate_max`（2h）截断——6004 的重置窗口常达数小时，截断会提前解冻、解冻即再撞 429。担心上游给出异常远时刻时可配 `cooldown.model_rate_max`（如 `24h`）设上限，空 = 不封顶
+- **到期自动回到调度**：条目到期即被回收，该组合重新参与选号；`model_cooldowns` 随 `state.json` 持久化，重启不丢
+- **无文案也按模型级**：6004 但没带「将在 … 重置」→ 模型级有界退避（`soft_rate` 基数起、按该组合命中次数翻倍、封顶 `model_rate_max` 或 `soft_rate_max`），**仍然不波及账号级**
+- **该模型全池无号可用 → 429 + 原因**：池里的号账号级都健康、只是这个模型都被 6004 限额时，选号阶段直接回 `429 rate_limit_exceeded`，message 说明几个号受限 / 最早何时恢复 / 建议先换模型，而不是笼统的 503「网关没有可用账号」
 
 ### 多图会话请求体超限怎么办？
 
@@ -936,6 +940,9 @@ sudo chown -R 10001:10001 ./auths ./data ./config.json
 | 出站强制 `stream:true` | `internal/upstream/payload.go` |
 | 多协议入口（Anthropic / Responses / Gemini）与 OpenAI 互转 | `internal/convert`（`AnthropicToOpenAI` / `ResponsesToOpenAI` / `GeminiToOpenAI` 与三个 `*Stream` 编码器）；路由与管道 `internal/server/protocol.go`（`runPipeline` / `relayOpenAIStream`）；注册点 `internal/server/handler.go`（`NewHandler`） |
 | 多协议鉴权凭证位置兼容（`x-api-key` / `x-goog-api-key` / `?key=`） | `internal/server/protocol.go`（`protoToken` / `withAuthAny`）、`internal/httpauth/httpauth.go`（`VerifyToken`） |
+| 模型级 6004 冷却精确对齐上游墙钟（`model_rate_max` 为可选封顶，默认不封顶） | `internal/pool/cooldown.go`（`CooldownSoftForModel` / `cappedModelUntilLocked` / `modelBackoffCapLocked`）；配置解析 `cmd/server/config.go`（`ModelRateMaxDur`）；注入 `cmd/server/main.go` |
+| 该模型全池限额 → 429 + 原因（而非 503） | `internal/server/handler.go`（`ModelBlockSummary` 归因分支）、`internal/pool/cooldown.go`（`ModelBlockSummary`） |
+| 面板展示模型级限额（逐行 + 折叠） | `internal/panel/app.js`（`rlmRows` / `hmClock` / `renderAccounts`）；`internal/panel/index.html`（`.rlm-box` 样式） |
 | DeepSeek 思维链注入（`thinking.type=enabled`） | `internal/upstream/thinking.go`（`injectThinking`） |
 | `reasoning_effort` 默认档兜底 = `high` | `internal/upstream/thinking.go`（`defaultDeepSeekEffort`） |
 | `reasoning_content` 多轮回填（assistant 消息） | `internal/upstream/thinking.go` |

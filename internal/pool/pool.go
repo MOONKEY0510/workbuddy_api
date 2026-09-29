@@ -25,6 +25,12 @@ type Pool struct {
 	breakerCooldownMax time.Duration
 	// softRateMax 软冷却指数退避的封顶（SetSoftRateMax 注入；默认 defaultSoftRateMax）。
 	softRateMax time.Duration
+	// modelRateMax 模型级（6004）冷却的**可选**封顶（SetModelRateMax 注入）。
+	// 0 = 不封顶（默认）：上游「将在 … 重置」的墙钟是权威恢复时刻，直接采信——
+	// 6004 的重置窗口常达数小时，用账号级 soft_rate_max(2h) 截断会提前解冻、
+	// 解冻即再撞 429（实测：01:33 撞限、上游说 03:46 重置，被截到 03:33）。
+	// 仅在担心上游给出异常远时刻时配置（如 24h）。
+	modelRateMax time.Duration
 	// costExploreInterval costTier 条件探索窗口（issue #136 方案 a′，SetCostExploreInterval
 	// 注入；默认 defaultCostExploreInterval 30m）。tier 0 垄断 + tier 1 存在且距上次
 	// 探索 ≥ 窗口时，本次 pick 生效层切 tier 1-only（探索=搭车改道，零新增上游请求）。
@@ -128,6 +134,18 @@ func (p *Pool) SetSoftRateMax(d time.Duration) {
 	if d > 0 {
 		p.softRateMax = d
 	}
+}
+
+// SetModelRateMax 注入模型级（6004）冷却的可选封顶（main 从 cooldown.model_rate_max
+// 解析后调用）。**0 = 不封顶**（默认语义：直接采信上游重置墙钟），故这里允许显式置 0；
+// 负值非法忽略（风格同 SetCostExploreInterval 对 0 的容忍）。
+func (p *Pool) SetModelRateMax(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if d < 0 {
+		return
+	}
+	p.modelRateMax = d
 }
 
 // SetCostExploreInterval 注入 costTier 条件探索窗口（main 从 config 解析后调用，

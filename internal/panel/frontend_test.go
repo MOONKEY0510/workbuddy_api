@@ -165,6 +165,92 @@ func TestConfirmGoesThroughAsk(t *testing.T) {
 	}
 }
 
+// TestModelLimitRowsRender 多模型同时限额的展示形态：**每模型一行**（不是挤在一行里
+// 用分隔符串接），超过 3 个折叠为"…等 N 个模型"。rlmRows 是纯函数（返回 HTML 片段），
+// 用 node 在 vm 里直调即可，无需 DOM 桩。
+func TestModelLimitRowsRender(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed; model limit rows check skipped")
+	}
+	script := appJSHarness + `
+vm.runInContext(src, sandbox, { filename: 'app.js' });
+const until = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+const j = JSON.stringify(until);
+const rows = n => '[' + Array.from({ length: n }, (_, i) =>
+  '{model:"m' + (i + 1) + '",until:' + j + ',reason:"6004 model rate limit"}').join(',') + ']';
+const out = {
+  one: vm.runInContext('rlmRows(' + rows(1) + ')', sandbox),
+  three: vm.runInContext('rlmRows(' + rows(3) + ')', sandbox),
+  five: vm.runInContext('rlmRows(' + rows(5) + ')', sandbox),
+  empty: vm.runInContext('rlmRows([])', sandbox),
+};
+console.log('ROWS:' + JSON.stringify(out));
+process.exit(0);
+`
+	path := filepath.Join(t.TempDir(), "rlm-rows.cjs")
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(node, path, "app.js")
+	cmd.Dir = "."
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("node 执行失败: %v\n%s", err, out)
+	}
+	line := ""
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(l, "ROWS:") {
+			line = strings.TrimPrefix(l, "ROWS:")
+		}
+	}
+	if line == "" {
+		t.Fatalf("未取到 ROWS 行（app.js 求值失败？）:\n%s", out)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(line), &got); err != nil {
+		t.Fatalf("解析失败: %v (%s)", err, line)
+	}
+	countLines := func(s string) int { return strings.Count(s, `class="hint rlm-line"`) }
+	if n := countLines(got["one"]); n != 1 {
+		t.Errorf("单模型应 1 行，实际 %d：%s", n, got["one"])
+	}
+	if !strings.Contains(got["one"], "glm-5.3") && !strings.Contains(got["one"], "m1") {
+		t.Errorf("缺模型名：%s", got["one"])
+	}
+	if n := countLines(got["three"]); n != 3 {
+		t.Errorf("3 个模型应 3 行，实际 %d：%s", n, got["three"])
+	}
+	if strings.Contains(got["three"], "等") {
+		t.Errorf("3 个模型不应折叠：%s", got["three"])
+	}
+	if n := countLines(got["five"]); n != 4 { // 3 行明细 + 1 行折叠提示（折叠提示同为一行）
+		t.Errorf("5 个模型应渲染 3 行明细 + 1 行折叠提示，实际 %d：%s", n, got["five"])
+	}
+	if !strings.Contains(got["five"], "…等 5 个模型") {
+		t.Errorf("5 个模型应有折叠提示：%s", got["five"])
+	}
+	if got["empty"] != "" {
+		t.Errorf("无限额应返回空串：%q", got["empty"])
+	}
+}
+
+// TestAccountsRenderModelLimits 账号池渲染必须消费 rate_limited_models（6004 模型级
+// 限额台账）。/status 一直在返回它，但前端曾完全不展示——运维只能看到账号级"可用/冷却"，
+// 一个号有几个模型被限流是"隐身"的。此测试防该展示被整体删除/改名。
+func TestAccountsRenderModelLimits(t *testing.T) {
+	js, err := os.ReadFile("app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(js)
+	for _, want := range []string{"rate_limited_models", "模型限流"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js 缺少 %q：账号池不再展示模型级限额（面板将看不到哪个模型被限）", want)
+		}
+	}
+}
+
 // TestBeautifySelectTargetsExist app.js 里 beautifySelect($('id')) 注册的每个 id
 // 必须在 index.html 中存在。
 //

@@ -109,6 +109,33 @@ function dur(sec) {
   return h ? h + '时' + String(m).padStart(2, '0') + '分' : m ? m + '分' + String(s).padStart(2, '0') + '秒' : s + '秒';
 }
 
+// hmClock 把 RFC3339 转成本地 HH:MM（模型级限流的恢复时刻展示用）：当天只给时分，
+// 跨天补 "MM-DD"；无值/非法回 "—"。
+function hmClock(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '—';
+  const hm = d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString()
+    ? hm
+    : (d.getMonth() + 1) + '-' + d.getDate() + ' ' + hm;
+}
+
+// rlmRows 生成模型级限额（6004）的明细行：**每个模型一行**（并行/垂直排列，便于扫读
+// 各自的恢复时刻）；超过 3 个折叠为"…等 N 个模型"（完整清单在状态标签的 title 里）。
+// 抽成纯函数便于测试（不依赖 DOM）。
+function rlmRows(rlm) {
+  if (!rlm || !rlm.length) return '';
+  const shown = rlm.slice(0, 3);
+  let html = shown.map(r =>
+    '<div class="hint rlm-line" title="' + esc(r.model + (r.reason ? '（' + r.reason + '）' : '')) + '">' +
+    esc(r.model) + ' · ' + hmClock(r.until) + ' 恢复</div>').join('');
+  if (rlm.length > shown.length) {
+    html += '<div class="hint rlm-line">…等 ' + rlm.length + ' 个模型</div>';
+  }
+  return html;
+}
+
 // copyText 通用剪贴板（所有「复制」按钮的唯一入口）。两段式：
 //   1) clipboard API——只在 secure context（https / localhost）存在，且即便存在也可能
 //      被权限策略拒绝（NotAllowedError：文档未聚焦 / 用户拒绝授权）；
@@ -218,6 +245,10 @@ function renderAccounts(list) {
     const bl = (new Date(s.breaker_until || 0) - Date.now()) / 1000;
     const dg = (new Date(s.degrade_until || 0) - Date.now()) / 1000;
     const cool = Math.max(s.cool_remaining_sec || 0, bl > 0 ? bl : 0, dg > 0 ? dg : 0);
+    // 模型级限额台账（6004）：账号整体可用、只是这些模型被上游按模型维度限流——
+    // 单独标出（含恢复时刻），避免误读成"整个号被停"；到期自动回到该模型的调度。
+    const rlm = (s.rate_limited_models || []).filter(r => r.model);
+    const rlmTip = rlm.map(r => r.model + '：' + hmClock(r.until) + ' 恢复' + (r.reason ? '（' + r.reason + '）' : '')).join('\n');
     let cls = '', tag;
     if (s.disabled) { cls = 'off'; tag = '<span class="tag bad">已禁用</span>'; }
     else if (cool > 0) {
@@ -225,8 +256,18 @@ function renderAccounts(list) {
       const kind = bl > Math.max(s.cool_remaining_sec || 0, dg > 0 ? dg : 0) ? '熔断'
         : (dg > (s.cool_remaining_sec || 0) ? '连败降权' : (s.cool_kind === 'hard_credit' ? '积分冷却' : '限流冷却'));
       tag = '<span class="tag warn">' + kind + ' · ' + dur(cool) + '</span>';
-    } else tag = '<span class="tag ok">可用</span>' + (s.in_flight ? '' : '');
+    } else {
+      tag = '<span class="tag ok">可用</span>';
+      if (rlm.length) {
+        tag += '<span class="tag warn" title="上游按模型维度限额：这些模型当前不可用，该账号的其它模型照常参与调度&#10;' +
+          esc(rlmTip) + '">模型限流 ×' + rlm.length + '</span>';
+      }
+    }
     const note = s.reason ? '<div class="hint" style="font-size:11.5px;color:var(--ink-3);margin-top:3px">' + esc(s.reason) + '</div>' : '';
+    // 多模型同时限额：每模型一行（见 rlmRows），带 "限流" 前缀标一行。
+    const rlmNote = rlm.length
+      ? '<div class="rlm-box" title="' + esc(rlmTip) + '"><span class="rlm-cap">限流</span>' + rlmRows(rlm) + '</div>'
+      : '';
     const short = s.uid.length > 16 ? s.uid.slice(0, 16) + '…' : s.uid;
     const cred = s.credits == null ? '—' : (s.credits_total > 0 ? s.credits + '<span class="of">/' + s.credits_total + '</span>' : String(s.credits));
     const pct = s.credits_total > 0
@@ -251,7 +292,7 @@ function renderAccounts(list) {
     return '<tr class="' + cls + '" title="uid: ' + esc(s.uid) + '">' +
       '<td class="mark" aria-hidden="true"><i></i></td>' +
       '<td class="who"><div class="nm">' + (s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') + (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') + '</div><div class="id">' + esc(short) + '</div></td>' +
-      '<td>' + tag + note + '</td>' +
+      '<td>' + tag + note + rlmNote + '</td>' +
       '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar"><i style="width:' + pct + '%"></i></div></td>' +
       '<td class="num">' + (s.success_count || 0) + ' <span style="color:var(--ink-3)">/</span> <span style="color:var(--bad)">' + (s.err_total || 0) + '</span></td>' +
       '<td class="num">' + (s.in_flight || 0) + '</td>' +
@@ -486,6 +527,7 @@ const CFG_MAP = {
   degrade_cooldown_max: ['pool', 'degrade_cooldown_max'],
   cost_explore_interval: ['pool', 'cost_explore_interval'],
   soft_rate: ['cooldown', 'soft_rate'], soft_rate_max: ['cooldown', 'soft_rate_max'],
+  model_rate_max: ['cooldown', 'model_rate_max'],
   breaker_cooldown: ['pool', 'breaker_cooldown'], breaker_cooldown_max: ['pool', 'breaker_cooldown_max'],
   idle_weight_per_hour: ['pool', 'idle_weight_per_hour'], idle_weight_max: ['pool', 'idle_weight_max'],
   ttl: ['session_sticky', 'ttl'],
@@ -542,8 +584,8 @@ function collectConfig() {
    ParseDuration 语法（30m / 2h / 600s / 1h30m，可组合可带小数）。与后端
    config.go normalize() 的 time.ParseDuration 同口径，脏值在前端就地标红，
    不再等到保存被拒。 */
-const DURATION_RE = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
-const DURATION_FIELDS = ['soft_rate', 'soft_rate_max', 'breaker_cooldown', 'breaker_cooldown_max',
+const DURATION_RE = /^(0|\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/; // 裸 "0" 合法：Go ParseDuration 接受，模型级上限用它表"不封顶"
+const DURATION_FIELDS = ['soft_rate', 'soft_rate_max', 'model_rate_max', 'breaker_cooldown', 'breaker_cooldown_max',
   'degrade_cooldown', 'degrade_cooldown_max', 'cost_explore_interval', 'ttl'];
 const DURATION_TIP = '格式应为 Go 时长：30m / 2h / 600s / 1h30m';
 function durationBad(name) {

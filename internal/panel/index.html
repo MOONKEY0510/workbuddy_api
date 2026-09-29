@@ -366,6 +366,14 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .acc.cl .cch { color: var(--ok); }
 .acc.cl .rsn { color: var(--accent); }
 .acc.cl .zero { color: var(--ink-3); }
+/* 账号池：模型级限额（6004）明细——每模型一行，垂直排列（多模型同时限额时逐条可读） */
+.rlm-box { margin-top: 3px; }
+.rlm-cap {
+  display: inline-block; margin-right: 4px; padding: 0 5px; border-radius: var(--r-xs);
+  font: 550 10px/1.6 var(--sans); color: var(--warn); background: rgba(232,163,61,.13);
+  border: 1px solid rgba(232,163,61,.34); vertical-align: 1px;
+}
+.rlm-line { font-size: 11px; color: var(--warn); line-height: 1.5; white-space: nowrap; }
 /* 调用记录：过滤条 + 失败详情展开（失败行可点开看"为什么失败"） */
 .acc.cl tbody tr.fail { cursor: pointer; }
 .acc.cl tbody tr.fail:hover { background: var(--surface-2); }
@@ -1257,6 +1265,10 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
                 <input name="soft_rate" placeholder="600s"></label>
               <label class="fld"><span class="lb">软冷却退避上限</span>
                 <input name="soft_rate_max" placeholder="2h"></label>
+              <label class="fld"><span class="lb">模型级冷却上限（6004）</span>
+                <input name="model_rate_max" placeholder="0 = 按文案时间不封顶"></label>
+            </div>
+            <div class="grid3">
               <label class="fld"><span class="lb">熔断基础时长</span>
                 <input name="breaker_cooldown" placeholder="30m"></label>
             </div>

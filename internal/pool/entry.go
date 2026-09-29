@@ -128,7 +128,7 @@ type RateLimitedModel struct {
 	// Until 冷却到期时刻 = 该模型的独立冷却截止（modelCooldowns[m].Until，截断后），
 	// 多模型限流时不再等于 Status.Until（账号级）。
 	Until time.Time `json:"until,omitempty"`
-	// ResetAt 上游「将在 … 重置」的原始墙钟（未经 soft_rate_max 截断）；
+	// ResetAt 上游「将在 … 重置」的原始墙钟（未经 model_rate_max 截断）；
 	// 截断后 Until==ResetAt 时省略 ResetAt 让台账自然减少一列。
 	ResetAt time.Time `json:"reset_at,omitempty"`
 	// Reason 触发原因（运维可读文案）。
@@ -141,15 +141,17 @@ type RateLimitedModel struct {
 //   - 11102 该后端无此模型：Until 为指数退避 TTL（6h 起、封顶 24h）；Hits 记录
 //     累计命中次数驱动退避（6004 无 hits 概念，Hits 恒 0）。
 type modelCooldown struct {
-	// Until 该模型的冷却截止（6004：now+min(resetAt-now, soft_rate_max)；11102：now+退避 TTL）。
+	// Until 该模型的冷却截止（6004：上游重置墙钟，默认**不截断**，仅
+	// cooldown.model_rate_max 配置时封顶；无文案的 6004 与 11102：now+退避 TTL）。
 	Until time.Time
-	// ResetAt 上游「将在 … 重置」的原始墙钟（未经 soft_rate_max 截断）。
-	// 与 Until 的区别同：Until 可能截断，ResetAt 是上游权威恢复时刻。
-	// 11102 无重置文案，ResetAt 恒零值。
+	// ResetAt 上游「将在 … 重置」的原始墙钟（与 Until 的区别仅在上限截断时体现：
+	// ResetAt 恒为上游权威恢复时刻）。11102 无重置文案，ResetAt 恒零值。
 	ResetAt time.Time
 	// Reason 触发原因（透出运维可读文案，同 Status.Reason）。
 	Reason string
-	// Hits 11102 负缓存的累计命中次数（驱动指数退避）。6004 条目 Hits 恒 0。
+	// Hits 该 (账号, 模型) 条目的累计命中次数，驱动"无精确恢复时刻"时的指数退避：
+	// 11102 负缓存与「6004 无重置文案」共用。带上游墙钟的 6004 条目 Hits 恒 0
+	// （精确冷却不需要退避计数）。
 	Hits int
 }
 

@@ -40,6 +40,11 @@ type Config struct {
 		// SoftRateMax 软冷却指数退避的封顶，默认 "2h"。
 		// 空值回落默认，非法值报错（处理风格同 soft_rate）。
 		SoftRateMax string `json:"soft_rate_max"` // "2h"
+		// ModelRateMax 模型级（6004）冷却的**可选**封顶，默认空 = 不封顶：
+		// 上游「将在 … 重置」的墙钟是权威恢复时刻，直接采信（6004 的重置窗口常达
+		// 数小时，用 soft_rate_max 截断会提前解冻、解冻即再撞 429）。仅在担心上游
+		// 给出异常远时刻时配置（如 "24h"）。空值/"0" = 不封顶；非法值报错。
+		ModelRateMax string `json:"model_rate_max"` // ""（不封顶）/ "24h"
 	} `json:"cooldown"`
 
 	Schedule struct {
@@ -168,6 +173,7 @@ type Config struct {
 	// 解析后
 	SoftRateDur            time.Duration `json:"-"`
 	SoftRateMaxDur         time.Duration `json:"-"`
+	ModelRateMaxDur        time.Duration `json:"-"` // 0 = 模型级冷却不封顶（默认）
 	BreakerCooldownDur     time.Duration `json:"-"`
 	BreakerCooldownMaxD    time.Duration `json:"-"`
 	DegradeCooldownDur     time.Duration `json:"-"`
@@ -340,6 +346,9 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("WB2A_SOFT_RATE_MAX"); v != "" {
 		c.Cooldown.SoftRateMax = v
 	}
+	if v := os.Getenv("WB2A_MODEL_RATE_MAX"); v != "" {
+		c.Cooldown.ModelRateMax = v
+	}
 	if v := os.Getenv("WB2A_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.Upstream.TimeoutSeconds = n
@@ -405,6 +414,13 @@ func (c *Config) normalize() error {
 	}
 	if c.SoftRateMaxDur, err = time.ParseDuration(c.Cooldown.SoftRateMax); err != nil {
 		return fmt.Errorf("cooldown.soft_rate_max: %w", err)
+	}
+	// 模型级（6004）冷却封顶：空值/"0" = 不封顶（默认，直接采信上游重置墙钟）。
+	// 只有显式配置正值才在 pool 侧截断（防上游异常远时刻把该组合长期锁死）。
+	if v := strings.TrimSpace(c.Cooldown.ModelRateMax); v == "" || v == "0" {
+		c.ModelRateMaxDur = 0
+	} else if c.ModelRateMaxDur, err = time.ParseDuration(v); err != nil {
+		return fmt.Errorf("cooldown.model_rate_max: %w", err)
 	}
 	if c.BreakerCooldownDur, err = time.ParseDuration(c.Pool.BreakerCooldown); err != nil {
 		return fmt.Errorf("pool.breaker_cooldown: %w", err)

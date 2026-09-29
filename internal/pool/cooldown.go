@@ -61,47 +61,119 @@ func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason strin
 	}
 }
 
-// CooldownSoftForModel 429 的**模型级**软冷却入口（issue #31）：把该模型的冷却截止
-// 精确对齐到上游重置墙钟（不做指数堆加、不做 softStreak 计数）。
+// CooldownSoftForModel 429 的**模型级**软冷却入口（issue #31）：只影响 (账号, 模型)
+// 这一组合，账号级状态（until/coolKind/softStreak）一律不动——该账号的其它模型照常
+// 参与调度；到期由 pruneExpiredModelCooldowns 自动回收，该组合即回到调度。
 //
-//   - resetAt 非零（带解析时间）→ modelCooldowns[model].Until = min(resetAt,
-//     now+softRateMax)，ResetAt 记录上游原始墙钟（台账 ResetAt）。不写 until
-//     （全账号级冷却不受模型级限流污染），切模型即可用（模型豁免）。
-//   - resetAt 零值（无时间文案）→ 有界退避：base 起按 softStreak 翻倍、封顶
-//     softRateMax，且**在软冷却中**（until 未到期）时不推进/不延长（兜底探测不再把
-//     冷却越堆越厚）。不记录模型（不豁免）。
-//
-// 与旧实现的差异：有上游重置时间时绝对不做指数堆加；无重置时间时，「冷却中兜底
-// 探测再 429」不再 softStreak++ 翻倍——这正是用户「全池被推到 2h 封顶」的元凶。
+//   - resetAt 非零（带「将在 … 重置」文案）→ modelCooldowns[model].Until = resetAt，
+//     **直接采信上游墙钟**：不做指数堆加，也不再被账号级 soft_rate_max 截断（6004 的
+//     重置窗口常达数小时，截断会提前解冻、解冻即再撞 429）。仅当显式配置了
+//     cooldown.model_rate_max > 0 时才封顶（防上游异常远时刻把组合长期锁死）。
+//     ResetAt 记录上游原始墙钟（台账展示用）。
+//   - resetAt 零值（6004 无文案 / 文案变体）→ **模型级**有界退避：base 起按该模型
+//     条目的 Hits 翻倍、封顶 model_rate_max（未配置则退回 soft_rate_max）。此前这个
+//     分支做的是账号级冷却并清空模型台账——一个模型没文案就把整个账号停掉，与
+//     「模型级」语义相反。
+//   - model 为空（请求没带模型名，无法归因到模型）→ 退化为账号级 CooldownSoftRate。
 func (p *Pool) CooldownSoftForModel(uid string, base time.Duration, resetAt time.Time, model, reason string) {
+	if model == "" {
+		p.CooldownSoftRate(uid, base, resetAt, reason)
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if e, ok := p.byUID[uid]; ok {
-		now := time.Now()
-		if !resetAt.IsZero() {
-			// 有上游重置时间：冷却截止 = min(resetAt, now+softRateMax)，不做指数放大。
-			if e.modelCooldowns == nil {
-				e.modelCooldowns = map[string]modelCooldown{}
-			}
-			e.modelCooldowns[model] = modelCooldown{
-				Until:   p.cappedSoftUntilLocked(now, resetAt),
-				ResetAt: resetAt,
-				Reason:  reason,
-			}
-		} else {
-			// 无解析时间（普通软冷却）：有界退避（base 起按 softStreak 翻倍、封顶
-			// softRateMax）。注意：**在软冷却中**（until 未到期）时不推进/不延长。
-			if e.coolKind != CoolSoft || !now.Before(e.until) {
-				d := p.softDurationLocked(base, e.softStreak+1)
-				e.softStreak++
-				e.until = now.Add(d)
-			}
-			e.coolKind = CoolSoft
-			e.reason = reason
-			e.modelCooldowns = nil
+	e, ok := p.byUID[uid]
+	if !ok {
+		return
+	}
+	now := time.Now()
+	if e.modelCooldowns == nil {
+		e.modelCooldowns = map[string]modelCooldown{}
+	}
+	if !resetAt.IsZero() {
+		e.modelCooldowns[model] = modelCooldown{
+			Until:   p.cappedModelUntilLocked(now, resetAt),
+			ResetAt: resetAt,
+			Reason:  reason,
 		}
 		p.dirty.Store(true)
+		return
 	}
+	// 无重置文案：模型级有界退避。**已在冷却中**（同模型条目未到期）时不推进/不延长，
+	// 避免兜底探测把冷却越堆越厚（口径与 CooldownSoftRate 的"冷却中不翻倍"一致）。
+	if mc, ok := e.modelCooldowns[model]; ok && !mc.Until.IsZero() && now.Before(mc.Until) {
+		return
+	}
+	hits := e.modelCooldowns[model].Hits + 1
+	d := base
+	for i := 1; i < hits && i <= softStreakShiftMax; i++ {
+		d <<= 1
+	}
+	if capD := p.modelBackoffCapLocked(); capD > 0 && (d > capD || d <= 0) {
+		d = capD // d<=0：左移溢出，同样按封顶兜底
+	}
+	e.modelCooldowns[model] = modelCooldown{
+		Until:  now.Add(d),
+		Reason: reason,
+		Hits:   hits,
+	}
+	p.dirty.Store(true)
+}
+
+// cappedModelUntilLocked 模型级冷却截止：默认**直接采信上游重置墙钟**（model_rate_max
+// 为 0 = 不封顶）；显式配置了上限才截断。已过期/时钟回拨给最小冷却（1ms），
+// 避免"冷却在写入瞬间就到期"导致同请求内反复重试。
+// 调用方必须已持有 p.mu。
+func (p *Pool) cappedModelUntilLocked(now, resetAt time.Time) time.Time {
+	if p.modelRateMax > 0 {
+		if capped := now.Add(p.modelRateMax); resetAt.After(capped) {
+			return capped
+		}
+	}
+	if resetAt.After(now) {
+		return resetAt
+	}
+	return now.Add(time.Millisecond)
+}
+
+// modelBackoffCapLocked 模型级**无文案**退避的封顶：配置了 model_rate_max 用它，
+// 否则退回账号级 soft_rate_max（默认 2h）——保证退避不会无上限增长。
+// 调用方必须已持有 p.mu。
+func (p *Pool) modelBackoffCapLocked() time.Duration {
+	if p.modelRateMax > 0 {
+		return p.modelRateMax
+	}
+	return p.softRateMaxOr()
+}
+
+// ModelBlockSummary 报告某模型在池中的限额情况（只读，供 handler 在该模型无可用
+// 账号时返回 429 + 精确原因）：
+//   - limited：因该模型处于模型级冷却（未到期）的账号数；
+//   - earliest：这些限额账号里最早恢复的时刻（无则零值）；
+//   - healthyIgnoring：**忽略模型限额后**账号级仍可用的账号数（healthy + 在途未满，
+//     禁用的不计）。它是"号本身是好的、只是这个模型都被上游限额了"的判据。
+func (p *Pool) ModelBlockSummary(model string) (limited int, earliest time.Time, healthyIgnoring int) {
+	if model == "" {
+		return 0, time.Time{}, 0
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	for _, e := range p.byUID {
+		if e.disabled {
+			continue
+		}
+		if mc, ok := e.modelCooldowns[model]; ok && !mc.Until.IsZero() && now.Before(mc.Until) {
+			limited++
+			if earliest.IsZero() || mc.Until.Before(earliest) {
+				earliest = mc.Until
+			}
+		}
+		if e.healthy(now) && !p.inFlightFull(e) {
+			healthyIgnoring++
+		}
+	}
+	return limited, earliest, healthyIgnoring
 }
 
 // modelBlock TTL 常量（11102 负缓存退避）：

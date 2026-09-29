@@ -757,9 +757,9 @@ func TestChat6004ModelResetCoolsToParsedTime(t *testing.T) {
 	}
 }
 
-// TestChat6004WithoutResetFallsBackToBackoff 6004 无时间文案 → 退回 600s 基数软冷却
-// （现状不变）。
-func TestChat6004WithoutResetFallsBackToBackoff(t *testing.T) {
+// TestChat6004WithoutResetStaysModelLevel 6004 无时间文案 → 仍按**模型级**有界退避
+// （base 60s）：账号级不冷却——一个模型没文案不该把整个账号停掉，换模型即可用。
+func TestChat6004WithoutResetStaysModelLevel(t *testing.T) {
 	var calls int
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		calls++
@@ -782,12 +782,58 @@ func TestChat6004WithoutResetFallsBackToBackoff(t *testing.T) {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
 	st, _ := p.Status("bad")
-	if !st.Cooling || st.CoolKind != "soft_rate" {
-		t.Fatalf("bad should be soft cooling: %+v", st)
+	if st.Cooling {
+		t.Fatalf("6004 无文案不应触发账号级冷却: %+v", st)
 	}
-	// 冷却时长 = 注入 soft 基数(60s)，非解析时间（无重置文案）。
-	if st.CoolRemaining <= 0 || st.CoolRemaining > 60 {
-		t.Errorf("cool_remaining_sec=%d want ~60 (soft base, not parsed)", st.CoolRemaining)
+	if len(st.RateLimitedModels) != 1 || st.RateLimitedModels[0].Model != "glm-5.3" {
+		t.Fatalf("应写模型级限额台账: %+v", st.RateLimitedModels)
+	}
+	// 退避时长 = 注入 soft 基数(60s)，非解析时间（无重置文案）。
+	if rem := time.Until(st.RateLimitedModels[0].Until).Seconds(); rem <= 0 || rem > 60 {
+		t.Errorf("模型冷却剩余=%.0fs want ~60 (soft base backoff)", rem)
+	}
+}
+
+// TestChatModelLimitAllAccountsReturns429 该模型在所有账号上都被 6004 限额时：
+// 返回 429（不是笼统的 503），且说明原因（模型名 / 受限号数 / 最早恢复时刻）。
+func TestChatModelLimitAllAccountsReturns429(t *testing.T) {
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		// 所有账号对该模型都回 6004（真实形态：带「将在 … 重置」文案）
+		return 429, `{"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-09-30 23:46:43 UTC+8 重置，您也可以切换其他模型继续使用。"}`, false
+	})
+	p := testPoolWith(
+		&auth.Auth{UID: "a1", AccessToken: "at-a1", ExpiresAt: 9999999999},
+		&auth.Auth{UID: "a2", AccessToken: "at-a2", ExpiresAt: 9999999999},
+	)
+	h := NewHandler(Config{Pool: p, Upstream: up, SoftCooldown: time.Minute})
+
+	// 第一次请求：两个号都撞 6004 → 都被记入模型级冷却 → 请求以 429 结束。
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"glm-5.3","messages":[]}`)))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
+	}
+	// 第二次请求（所有号都在该模型上限额）→ 选号阶段直接归因 429 + 原因说明。
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"glm-5.3","messages":[]}`)))
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("全池模型限额应回 429: code=%d body=%s", rec2.Code, rec2.Body)
+	}
+	body := rec2.Body.String()
+	for _, want := range []string{"glm-5.3", "model-level cooldown", "earliest reset", "switch to another model"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("429 原因说明缺少 %q: %s", want, body)
+		}
+	}
+	// 账号级不应被冷：换一个只有 SSE 成功的上游、同一个池 → 别的模型仍能选到号。
+	h2 := NewHandler(Config{Pool: p, Upstream: captureUpstream(t, nil, sseOK), SoftCooldown: time.Minute})
+	rec3 := httptest.NewRecorder()
+	h2.ServeHTTP(rec3, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"hy3-x","messages":[]}`)))
+	if rec3.Code != 200 {
+		t.Fatalf("其它模型应仍可用（账号级未被冷）: code=%d body=%s", rec3.Code, rec3.Body)
 	}
 }
 
