@@ -2,6 +2,7 @@
 //  1. 强制 stream:true（上游拒绝非流式）
 //  2. tool_choice 归一化（上游该字段是 string，对象形式会 400 code=11101）
 //  3. image_url 归一化（上游只认 OpenAI 对象形态，字符串会 400 code=11101）
+//  4. stop 归一化（上游 Go struct 是 []string，字符串形态会 400 code=11101）
 package upstream
 
 import (
@@ -50,6 +51,7 @@ func PrepareBodyOptWithEffortsAndDefault(src []byte, sanitize bool, efforts map[
 	normalizeToolChoice(obj)
 	normalizeRoles(obj)
 	normalizeImageURL(obj)
+	normalizeStop(obj)
 	// tool 配对两步（见 tool_pairing.go）：先重排再清理。所有模型一律执行（独立于
 	// deepseek-only 的 sanitize 开关）。这是「让请求通过」的安全网——不完整配对的
 	// tool_calls/tool 结果会让上游对之后每条消息都返 400，必须先行剔除；
@@ -250,6 +252,31 @@ func normalizeImageURL(obj map[string]any) {
 			part["image_url"] = map[string]any{"url": imageURL}
 		}
 	}
+}
+
+// normalizeStop 兼容 OpenAI chat 请求 stop 字段的两种写法。
+//
+// OpenAI Chat Completions 规范允许 stop 为字符串或字符串数组（≤4 个），
+// 部分客户端（SillyTavern 等）只发字符串形态。WorkBuddy 上游的 Go struct
+// 把 stop 定义为 []string，字符串形态会返回 400 code=11101
+// "cannot unmarshal string into Go struct field ***.stop of type []string"
+// （客户端畸形 body 会被网关原样透传到上游，归 ErrBadParams 换号轮转后仍 503）。
+//
+// 只做形状转换：字符串转单元素数组。**不做 TrimSpace**——停止词的前后空白
+// 是匹配语义本身（"\n\nHuman:"、"\n\n" 都靠前导换行触发），裁剪等于静默改写
+// 客户端意图（单测曾抓到该回归）。空串同样转 [""] 保留（与 normalizeImageURL
+// 同哲学：不替客户端决定什么是无效值）；数组/null/其他类型/缺失一律不动。
+// 与 normalizeRoles 同属「协议兼容」而非「内容脱敏」，不受 sanitize 开关控制。
+func normalizeStop(obj map[string]any) {
+	v, present := obj["stop"]
+	if !present {
+		return
+	}
+	s, ok := v.(string)
+	if !ok {
+		return
+	}
+	obj["stop"] = []string{s}
 }
 
 // ensureConsoleSystem global realm 兜底 system 注入（吸收 PR #45，防 console 域上游 code 11-128）：

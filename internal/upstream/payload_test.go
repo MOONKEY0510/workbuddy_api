@@ -190,6 +190,90 @@ func decodeBody(b []byte) (map[string]any, error) {
 	return obj, err
 }
 
+// TestNormalizeStop 覆盖 OpenAI chat 请求 stop 字段的形状兼容：
+// 字符串形态必须转成上游 []string 接受的单元素数组；数组原样保留；
+// 前后空白是停止词匹配语义本身，不得裁剪；无效输入不静默修复，
+// 交上游返回真实错误。双 sanitize 开关同判（协议兼容与脱敏解耦）。
+func TestNormalizeStop(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		want     any  // 期望的 stop 值；nil 表示值就是 null（字段在场）
+		wantGone bool // true 时断言 stop 字段被删除
+	}{
+		{
+			name: "字符串转单元素数组（前导换行原样保留）",
+			body: `{"model":"glm-5.2","messages":[],"stop":"\n\nHuman:"}`,
+			want: []any{"\n\nHuman:"},
+		},
+		{
+			name: "前后空白是匹配语义不裁剪",
+			body: `{"model":"glm-5.2","messages":[],"stop":"  END  "}`,
+			want: []any{"  END  "},
+		},
+		{
+			name: "纯换行停止词原样保留",
+			body: `{"model":"glm-5.2","messages":[],"stop":"\n\n"}`,
+			want: []any{"\n\n"},
+		},
+		{
+			name: "空字符串同样转数组保留（不替客户端判无效）",
+			body: `{"model":"glm-5.2","messages":[],"stop":""}`,
+			want: []any{""},
+		},
+		{
+			name: "数组原样保留（本就是上游期望形态）",
+			body: `{"model":"glm-5.2","messages":[],"stop":["END","STOP"]}`,
+			want: []any{"END", "STOP"},
+		},
+		{
+			name: "空数组原样保留",
+			body: `{"model":"glm-5.2","messages":[],"stop":[]}`,
+			want: []any{},
+		},
+		{
+			name: "null 原样保留（Go 侧合法：unmarshal 到 []string 得 nil）",
+			body: `{"model":"glm-5.2","messages":[],"stop":null}`,
+			want: nil,
+		},
+		{
+			name: "非字符串非数组（数字）原样透传交上游报错",
+			body: `{"model":"glm-5.2","messages":[],"stop":123}`,
+			want: float64(123),
+		},
+		{
+			name:     "未携带字段不注入",
+			body:     `{"model":"glm-5.2","messages":[]}`,
+			wantGone: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, sanitize := range []bool{false, true} {
+				out := PrepareBodyOptWithEfforts([]byte(tc.body), sanitize, nil)
+				obj, err := decodeBody(out)
+				if err != nil {
+					t.Fatalf("sanitize=%v unmarshal: %v (out=%s)", sanitize, err, out)
+				}
+				got, present := obj["stop"]
+				if tc.wantGone {
+					if present {
+						t.Errorf("sanitize=%v: stop should be deleted, got %#v", sanitize, got)
+					}
+					continue
+				}
+				if tc.want == nil && !present {
+					continue // null 场景：字段在场值为 nil
+				}
+				if !reflect.DeepEqual(got, tc.want) {
+					t.Errorf("sanitize=%v: stop=%#v want %#v", sanitize, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 // TestPrepareBodyDeterministic 序列化稳定性：同输入跑多遍出站字节级一致
 // （prompt_cache_key 前缀命中的前提——链中不得注入时间/随机/ID 类不确定源）。
 func TestPrepareBodyDeterministic(t *testing.T) {
