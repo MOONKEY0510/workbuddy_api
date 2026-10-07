@@ -797,9 +797,13 @@ func TestChat6004WithoutResetStaysModelLevel(t *testing.T) {
 // TestChatModelLimitAllAccountsReturns429 该模型在所有账号上都被 6004 限额时：
 // 返回 429（不是笼统的 503），且说明原因（模型名 / 受限号数 / 最早恢复时刻）。
 func TestChatModelLimitAllAccountsReturns429(t *testing.T) {
+	// 重置墙钟必须动态取未来时刻：上游文案里的时刻若已过期，pool 会把模型级冷却
+	// 钳到 now+1ms（写入即到期），第二次请求就走末端透传 429 而非归因分支。此前
+	// 写死的 2026-09-30 23:46:43 一到日子就让本用例必红。
+	resetTs := time.Now().Add(35 * time.Minute).In(upstream.SoftRateResetLoc()).Format("2006-01-02 15:04:05")
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		// 所有账号对该模型都回 6004（真实形态：带「将在 … 重置」文案）
-		return 429, `{"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-09-30 23:46:43 UTC+8 重置，您也可以切换其他模型继续使用。"}`, false
+		return 429, `{"code":6004,"msg":"您的使用量已超出频率限制，将在 ` + resetTs + ` UTC+8 重置，您也可以切换其他模型继续使用。"}`, false
 	})
 	p := testPoolWith(
 		&auth.Auth{UID: "a1", AccessToken: "at-a1", ExpiresAt: 9999999999},
