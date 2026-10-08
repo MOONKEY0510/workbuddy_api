@@ -502,6 +502,7 @@ type ResponsesStream struct {
 	seq         int
 	started     bool
 	finished    bool
+	failed      bool // 已发 response.failed（终态）：收尾不得再补 response.completed
 	outputIndex int
 	output      []any
 	usage       map[string]any
@@ -655,12 +656,23 @@ func (s *ResponsesStream) closeMessage() error {
 }
 
 // closeFunc 收尾 function_call item。
+//
+// 参数完整性护栏（截断保护）：arguments 必须是**合法 JSON**。上游流被掐断时残留的是
+// 残缺分片（如 `{"cmd":"ls`），一旦下发，Codex 会把它持久化进会话并在之后的每一次
+// 请求里重放——上游校验工具记录时判「内容已损坏」（HTTP 400 code=11148，「直接重试
+// 无效，请新建任务」），整条会话报废且无法自愈（网关只能靠剥离工具历史抢救）。
+// 因此残缺调用**不下发**：不补 done 事件，该 item 在客户端侧始终未完成、不会进历史
+// （客户端同时会收到断流 error 帧 / response.failed，整轮被丢弃）。
+// 与聚合路径 dropTruncatedToolCalls 同哲学：宁可不给，也不给出会卡死会话的脏参数。
 func (s *ResponsesStream) closeFunc() error {
 	if !s.fcOpen {
 		return nil
 	}
 	s.fcOpen = false
 	args := pickStr(s.fcArgs.String(), "{}")
+	if !json.Valid([]byte(args)) {
+		return nil
+	}
 	item := map[string]any{
 		"type": "function_call", "id": s.fcID, "call_id": s.fcCallID,
 		"name": s.fcName, "arguments": args, "status": "completed",
@@ -851,10 +863,15 @@ func (s *ResponsesStream) Frame(chunk map[string]any) error {
 }
 
 // ErrorFrame 处理 OpenAI error 帧 → response.failed 事件。
+//
+// response.failed 是 Responses 协议的**终态**事件：此后不得再发 response.completed。
+// 否则客户端（Codex）会以"最后那个终态"为准，把失败读成"回答完成但输出为空"——
+// 这正是 Codex 侧「有输入、没有返回」的来源：真正的原因（上游失败）被矛盾的终态淹没。
 func (s *ResponsesStream) ErrorFrame(errObj map[string]any) error {
 	if err := s.ensureStart(); err != nil {
 		return err
 	}
+	s.failed = true
 	msg := asString(errObj["message"])
 	if msg == "" {
 		msg = jsonString(errObj)
@@ -871,11 +888,16 @@ func (s *ResponsesStream) ErrorFrame(errObj map[string]any) error {
 }
 
 // Finish 收尾：关闭打开的 item + response.completed（幂等）。
+// 已发过 response.failed 时直接结束：失败是终态，补 response.completed 会让客户端
+// 把本次失败读成"完成但空输出"（详见 ErrorFrame 注释）。
 func (s *ResponsesStream) Finish() error {
 	if s.finished {
 		return nil
 	}
 	s.finished = true
+	if s.failed {
+		return nil
+	}
 	if err := s.ensureStart(); err != nil {
 		return err
 	}

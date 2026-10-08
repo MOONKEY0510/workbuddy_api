@@ -623,7 +623,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	// credit/hasCredit：本次尝试的实扣积分（上游 usage.credit）。仅成功路径能拿到
 	// （流式末帧 / 非流式聚合 usage）；失败尝试没有，记 0。
-	recordAttempt := func(uid string, delta pool.TokenUsageDelta, started time.Time, credit float64, hasCredit bool, fail *attemptFail) {
+	//
+	// success 是本次尝试的**成功判定**，由调用方给出而非从"有没有拿到 usage"推出：
+	// 上游漏发末帧 usage 的成功尝试（曾有大量此类）过去会被记成失败，在「调用记录」
+	// 里表现为一条无任何详情的失败行（分类未知 / HTTP 状态 —），把真实失败淹没。
+	// 失败明细（fail != nil）恒覆盖为失败。
+	recordAttempt := func(uid string, delta pool.TokenUsageDelta, started time.Time, credit float64, hasCredit bool, fail *attemptFail, success bool) {
 		delta.Model = peek.Model
 		latency := time.Since(started)
 		latencyMs := latency.Milliseconds()
@@ -638,8 +643,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		h.cfg.Pool.RecordTokenUsage(uid, delta)
 
-		// 用量时序记录。ok 以「上游是否给了 usage」判定：空 delta 意味着这次尝试
-		// 没拿到任何 token 统计（传输错误 / >=400 / 解析失败），计为失败尝试。
+		// 用量时序记录。ok 与「调用记录」同口径（本次尝试成没成）：空 delta 不再
+		// 单方面意味着失败——失败尝试本就没有 token 统计，成功尝试也可能缺 usage。
 		// 失败也计入请求数——否则重试放大在「用量」视图里看不见。
 		realm, nick := "cn", ""
 		if a, ok := h.cfg.Pool.Status(uid); ok {
@@ -668,16 +673,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				HasCacheWrite:    delta.HasCacheWrite,
 				ReasoningTokens:  delta.ReasoningTokens,
 				HasReasoning:     delta.HasReasoningTokens,
-			}, delta.HasTotalTokens || delta.HasCompletionTokens || delta.HasPromptTokens)
+			}, success)
 		}
-		// 逐请求明细流水（与用量同口径：ok = 上游给了 usage；握手失败则一律计失败）。
+		// 逐请求明细流水（与用量同口径：ok = 上述成功判定）。
 		if h.cfg.Calls != nil {
 			entry := calls.Entry{
 				UID:              uid,
 				Nick:             nick,
 				Realm:            realm,
 				Model:            delta.Model,
-				OK:               delta.HasTotalTokens || delta.HasCompletionTokens || delta.HasPromptTokens,
+				OK:               success,
 				LatencyMs:        delta.LatencyMs,
 				PromptTokens:     delta.PromptTokens,
 				CompletionTokens: delta.CompletionTokens,
@@ -706,6 +711,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 降级裁决：append 在降级期退化为 replace（Rewrite(Degraded)）——append 带
 	// 指纹原文重试是确定性再撞墙，replace 是一次性最小抢救（issue #129 设计 §4）。
 	degradedApplied := false
+	// toolStripped 11148 自愈重试是否已用掉（一次性，见下方 ErrToolMismatch 分支）：
+	// 与 degradedApplied 同哲学——同一请求只抢救一次，避免用同一 body 无限打上游。
+	toolStripped := false
 	if h.cfg.PromptMode == "custom" && h.cfg.PromptText != "" {
 		body = prompt.Rewrite(body, h.cfg.PromptText)
 	} else if h.cfg.PromptMode == "append" && h.cfg.PromptText != "" && !h.degrade.Active() {
@@ -838,12 +846,26 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			status = uerr.Status
 		}
 		if uerr == nil && terr != nil {
+			// 客户端断连（ctx 已取消，如 Codex/CC-Switch 中断、用户 Esc、客户端超时）：
+			// 这次失败与账号、上游都无关，必须**在喂连败计数之前**分流——
+			// 否则客户端每断一次就给被选中的账号记一笔"未知失败"，几次之后整池账号
+			// 逐个被连败降权（面板表现为「降权一直在，自己解不了封」），而真凶是
+			// 客户端在反复断开。不换号（人已走，换号只是白打上游）、不罚号。
+			if r.Context().Err() != nil {
+				recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false,
+					&attemptFail{Status: statusClientClosedRequest, Kind: "client_abort",
+						Err: "客户端在响应完成前断开（" + terr.Error() + "）"}, false)
+				st.status = statusClientClosedRequest
+				lastErr = terr
+				fail(acct.UID)
+				break
+			}
 			// 网络层抖动：只换号，不喂熔断计数（传输层错误对连续失败连坐熔断过于严苛）。
 			// 连败兜底（issue #114）：喂连败计数——连不上上游是「不知道原因的失败」，
 			// 连败 N 次临时出池，单次/偶发不罚（NoteFailures 内部达阈才动作）。
 			// 上游 client 已打 transport error 日志。
 			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false,
-				&attemptFail{Status: http.StatusServiceUnavailable, Kind: "transport", Err: terr.Error()})
+				&attemptFail{Status: http.StatusServiceUnavailable, Kind: "transport", Err: terr.Error()}, false)
 			st.status = http.StatusServiceUnavailable
 			lastErr = terr
 			h.cfg.Pool.NoteFailures(acct.UID)
@@ -865,7 +887,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 失败明细入「调用记录」：状态 + 分类 + 上游原文（Add 侧截断兜底体积）。
 			// 放在 kind 判定之后——分类是面板详情里最有价值的一列。
 			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false,
-				&attemptFail{Status: status, Kind: kind.String(), Err: string(respBody)})
+				&attemptFail{Status: status, Kind: kind.String(), Err: string(respBody)}, false)
 			// 内容拦截误报（passthrough/append 模式首遇）：判定为 system 指纹误报，
 			// 触发降级到次日 00:00 CST，换 Degraded 中性提示词同请求内重试（append
 			// 降级重试同样退化为 replace——原文在场只会确定性再撞 400）。
@@ -925,6 +947,44 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				st.status = http.StatusBadRequest
 				return
 			}
+			// 11148「对话里的工具调用记录对不上」（上游判定会话工具记录已损坏）：
+			//   1. 首遇：剥离工具历史自愈重试一次（同一账号、不罚号、不换号）——
+			//      Codex 这类长工具会话一旦存档被写坏，换号/原样重试都是确定性再撞
+			//      （上游 displayTips 明说"直接重试无效"），只有丢掉工具上下文才能
+			//      让这条会话继续跑；新产生的调用/结果都是良构的，会话随轮次收敛。
+			//   2. 剥离后仍被拒 / 请求本来就没有工具记录：透传上游原文 + hint
+			//      （新建任务）返回，**不轮转**——换号同结论，只会把健康号拖下水并
+			//      在「调用记录」里刷满失败行。
+			// applyErrorPolicy 对该 kind 零动作（不罚号、尤其不喂连败降权：
+			// 一条坏会话每次重试都给被选中的号记一笔失败，正是"降权解不开"的根因）。
+			if kind == upstream.ErrToolMismatch {
+				h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel, uerr)
+				// 现场取证：把本次出站载荷的工具记录形状打出来（调用/结果条数、重复 id、
+				// 残缺 arguments、未配对条目）。上游只说"对不上"，这份形状数据才能指出
+				// 到底是哪一类——修复是否到位也由它验证。
+				log.Printf("WARN: [server] upstream 11148 tool-record shape acct=%s model=%s: %s",
+					logfmt.Label(acct.UID, acct.Nickname), bareModel, upstream.DiagnoseToolRecords(body))
+				if !toolStripped {
+					if repaired, ok := upstream.StripToolTraffic(body); ok {
+						toolStripped = true
+						body = repaired
+						delete(tried, acct.UID) // 自愈重试占一次名额（单账号池也能拿到机会）
+						releaseHeld()
+						log.Printf("WARN: [server] upstream 11148 tool-record mismatch acct=%s model=%s: retrying once without tool history",
+							logfmt.Label(acct.UID, acct.Nickname), bareModel)
+						continue
+					}
+				}
+				fail(acct.UID)
+				msg := string(respBody)
+				if strings.TrimSpace(msg) == "" {
+					msg = "upstream rejected the request: tool calls and tool results do not match"
+				}
+				writeOpenAIErrorHint(w, http.StatusBadRequest, "tool_call_mismatch", msg,
+					h.hintOf(upstream.ErrToolMismatch, string(respBody), bareModel, reqHasImage, uerr))
+				st.status = http.StatusBadRequest
+				return
+			}
 			// lastErr 携带完整 body（uerr.Msg 在 upstream 侧截断 200 字符，透传语义
 			// 要求原文全量）+ Kind/RetryAfter（末端映射与冷却时长共用）。
 			lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody), RetryAfter: uerr.RetryAfter}
@@ -961,21 +1021,67 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			sErr := upstream.StreamHint(w, stats, upstream.FrameHintFunc(func() upstream.HintContext {
 				return h.hintContext(bareModel, reqHasImage)
 			}))
+			// 流式结局归因：只有拿到证据才判失败，且必须分清「谁的错」。此前只看
+			// "有没有拿到 usage"——上游 200 后断流、客户端中途断开、上游漏发 usage
+			// 三种完全不同的结局全都落进「未知失败」，面板上是一排 0 token、无状态码、
+			// 无原因的失败行（Codex 场景实测大量出现，真失败反被淹没）。
+			// 判据优先级：流内 error 帧 > 客户端断开 > 空流 > 上游断流 > 正常收尾。
+			streamUsage := stats.Usage()
+			// 「正常收尾」判据 = 收到收尾口径的 usage（total / completion 至少其一）：
+			// 只有 prompt_tokens 的 usage 帧不算——有的上游开流就报一份输入用量，
+			// 若把它当收尾证据，一条"只报输入就被掐断"的流会被误判成成功（这正是
+			// 「有输入、没有返回」那一类行：输入有值、输出为空、无任何失败原因）。
+			hasFinalUsage := streamUsage.HasTotalTokens || streamUsage.HasCompletionTokens
+			errCode, errMsg, hasErrFrame := stats.ErrorFrame()
 			var streamFail *attemptFail
-			if upstream.IsEmptyStreamError(sErr) {
+			switch {
+			case hasErrFrame:
+				// 流内 error 帧（200 开流后的失败：内容拦截 / 限流 / 上游内部错误）：
+				// 这是本流唯一的失败证据，分类 + 原文一并入库，面板可直接读到原因。
+				st.status = http.StatusBadGateway
+				kindStr := upstream.FrameKind(frameFailPayload(errCode, errMsg)).String()
+				if kindStr == upstream.ErrNone.String() {
+					kindStr = "upstream_error" // 帧内无可识别 code/message 形态：不冒充已知分类
+				}
+				streamFail = &attemptFail{Status: http.StatusBadGateway, Kind: kindStr, Err: errMsg}
+				log.Printf("WARN: [server] stream acct=%s model=%s: upstream error frame code=%q msg=%s",
+					logfmt.Label(acct.UID, acct.Nickname), bareModel, errCode, errMsg)
+			case r.Context().Err() != nil:
+				// 客户端在响应完成前断开（Codex/CC-Switch 中断、用户 Esc、客户端超时）：
+				// 不是账号或上游的失败——标 client_abort 让面板可读，且不喂任何账号惩罚。
+				st.status = statusClientClosedRequest
+				streamFail = &attemptFail{Status: statusClientClosedRequest, Kind: "client_abort",
+					Err: "客户端在响应完成前断开（" + streamErrText(sErr) + "）"}
+			case upstream.IsEmptyStreamError(sErr):
 				// 上游 200 但空流（0 有效帧）：StreamHint 已写 error 帧 + [DONE]
 				// 兜底（HTTP 头已发出只能 200），但这是上游缺陷不是成功——日志/
 				// 状态收敛到 502 观测，与非流式 Aggregate 空流→502 upstream_parse
 				// 同语义（此前 `_ =` 吞错把失败流记成 200，运维看到假成功）。
-				// 只认 IsEmptyStreamError：客户端断连的写失败不误标（人已走，
-				// 502 观测没有意义）。
 				st.status = http.StatusBadGateway
 				log.Printf("WARN: [server] stream acct=%s model=%s: empty upstream stream (200+0 frames)", logfmt.Label(acct.UID, acct.Nickname), bareModel)
 				streamFail = &attemptFail{Status: http.StatusBadGateway, Kind: "upstream_parse",
 					Err: "empty upstream stream: HTTP 200 with no data frames"}
+			case sErr != nil:
+				// 读写失败但客户端还在：上游连接被判死（idle 超时 / 掐流 / 网络抖动）。
+				st.status = http.StatusBadGateway
+				streamFail = &attemptFail{Status: http.StatusBadGateway, Kind: "upstream_truncated", Err: streamErrText(sErr)}
+				log.Printf("WARN: [server] stream acct=%s model=%s: upstream stream aborted: %v",
+					logfmt.Label(acct.UID, acct.Nickname), bareModel, sErr)
+			case !stats.SawDone() && !hasFinalUsage:
+				// 上游既没给结束帧（data: [DONE]）也没给收尾口径的 usage：流被掐在半路
+				// （EOF 收尾），客户端拿到的内容是不完整的。缺它 + 缺 [DONE] 才判断流——
+				// 上游漏发 [DONE] 但按规范给了 usage 的正常收尾不会误判成失败
+				// （否则又刷一批假失败行）。
+				st.status = http.StatusBadGateway
+				streamFail = &attemptFail{Status: http.StatusBadGateway, Kind: "upstream_truncated",
+					Err: "上游流未正常收尾：未收到 data: [DONE] 与 usage 帧"}
+				log.Printf("WARN: [server] stream acct=%s model=%s: upstream stream ended without [DONE]/usage",
+					logfmt.Label(acct.UID, acct.Nickname), bareModel)
 			}
 			streamCredit, hasStreamCredit := stats.Credit()
-			recordAttempt(acct.UID, stats.Usage(), attemptStarted, streamCredit, hasStreamCredit, streamFail)
+			// 成功判定：没有上面任何一条失败证据 = 成功（含「正常收尾但上游没报 usage」
+			// 这一常见形态——token 数显示 "-"，但这不是失败）。
+			recordAttempt(acct.UID, streamUsage, attemptStarted, streamCredit, hasStreamCredit, streamFail, streamFail == nil)
 			st.ttfb = stats.TTFB()
 			// usage 缺失时保留 chatStat.toks 的 -1 哨兵（观测缺失 → 显示 "-"），
 			// 不写入零值——否则「没观测到 usage」被伪造成「测得 0 token」，
@@ -997,14 +1103,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		rc.Close()
 		if err != nil {
 			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false,
-				&attemptFail{Status: http.StatusBadGateway, Kind: "upstream_parse", Err: err.Error()})
+				&attemptFail{Status: http.StatusBadGateway, Kind: "upstream_parse", Err: err.Error()}, false)
 			// 上游流解析失败：客户端还没看到任何输出，回 502 并告知原因。
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 			st.status = http.StatusBadGateway
 			return
 		}
 		aggCredit, hasAggCredit := usageCredit(resp)
-		recordAttempt(acct.UID, usageDeltaFromResponse(resp), attemptStarted, aggCredit, hasAggCredit, nil)
+		recordAttempt(acct.UID, usageDeltaFromResponse(resp), attemptStarted, aggCredit, hasAggCredit, nil, true)
 		writeJSON(w, http.StatusOK, resp)
 		st.status = http.StatusOK
 		st.toks = completionTokens(resp)
@@ -1050,6 +1156,33 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	writeOpenAIErrorHint(w, status, code, msg, hint)
 	st.status = status
+}
+
+// statusClientClosedRequest 非标准状态码（nginx 约定 499）：客户端在响应完成前主动断开。
+// 只用于请求日志 / 「调用记录」/ 归因的观测口径，绝不写进任何响应（客户端已经走了）。
+const statusClientClosedRequest = 499
+
+// streamErrText 流式读结束错误的可读文案。客户端 ctx 取消但读写恰好没报错时 err 为 nil，
+// 此时给稳定描述，避免「调用记录」里出现空原因。
+func streamErrText(err error) string {
+	if err == nil {
+		return "请求上下文已取消（客户端不再接收）"
+	}
+	return err.Error()
+}
+
+// frameFailPayload 把流内 error 帧的 code/message 还原成上游信封形态，供 upstream.FrameKind
+// 复用与 400 错误体同源的分类口径（6004 模型级限流等形态在帧里同样要认出来）。
+func frameFailPayload(code, msg string) string {
+	errObj := map[string]any{"message": msg}
+	if code != "" {
+		errObj["code"] = code
+	}
+	raw, err := json.Marshal(map[string]any{"error": errObj})
+	if err != nil {
+		return msg
+	}
+	return string(raw)
 }
 
 // promptTooLongMessage 11115 透传 message：上游 body 原文（含真实 token 数/
@@ -1207,6 +1340,12 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 	case upstream.ErrImageInvalid:
 		// 图片格式/数据无效：请求的问题不是账号的问题（同一 body 换任何号都会
 		// 得到相同解析错误）。零动作，chatCompletions 已 fail-fast 透传。
+	case upstream.ErrToolMismatch:
+		// 11148 工具调用记录不匹配：对话历史（客户端侧）已损坏，换号同结论。
+		// **零动作**——尤其不能喂连败降权：一条坏会话会在每次重试时给被选中的账号
+		// 各记一笔失败，几次之后整池账号逐个被降权出池，而"元凶"每次都在重试里
+		// 刷新计数——这正是「连败降权自己解不了封」的根因之一。
+		// chatCompletions 已先做剥离工具历史的自愈重试，仍失败则透传原文 + hint。
 	case upstream.ErrBadParams:
 		// 请求体解析失败（400 + Unmarshal chat params failed / 11101）：发给上游的 body
 		// 有问题（网关侧不再截断，均为客户端畸形 JSON）。换了账号照样 400，

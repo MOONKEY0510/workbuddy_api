@@ -230,3 +230,41 @@ func TestGeminiSSEContentTypeContract(t *testing.T) {
 		t.Errorf("Gemini SSE 缺少 data 帧: %s", sb.String())
 	}
 }
+
+// TestGeminiStreamErrorIsTerminal error chunk 是终态：其后不得再补带 finishReason 的
+// 终止 chunk（那等于宣告"正常结束"，与 error 互相矛盾，客户端可能读成空回答）。
+// 两种输出后端（SSE / JSON 数组）都要收敛，数组形态还必须闭合。
+func TestGeminiStreamErrorIsTerminal(t *testing.T) {
+	var sb strings.Builder
+	st := NewGeminiStream(&sb, nil, "m", true)
+	_ = st.Frame(map[string]any{"choices": []any{map[string]any{"index": float64(0), "delta": map[string]any{"content": "x"}}}})
+	_ = st.ErrorFrame(map[string]any{"message": "boom"})
+	_ = st.Finish()
+
+	events := parseSSEEvents(t, sb.String())
+	if len(events) == 0 {
+		t.Fatal("无 SSE 事件")
+	}
+	if last := events[len(events)-1]; last.data["error"] == nil {
+		t.Fatalf("末帧应为 error chunk: %v", last.data)
+	}
+	for _, e := range events {
+		for _, cv := range asSlice(e.data["candidates"]) {
+			if cm, _ := cv.(map[string]any); cm != nil && cm["finishReason"] != nil {
+				t.Errorf("error 之后不应有 finishReason 终止 chunk: %v", e.data)
+			}
+		}
+	}
+
+	var ab strings.Builder
+	st2 := NewGeminiStream(&ab, nil, "m", false)
+	_ = st2.ErrorFrame(map[string]any{"message": "boom"})
+	_ = st2.Finish()
+	var arr []map[string]any
+	if err := json.Unmarshal([]byte(ab.String()), &arr); err != nil {
+		t.Fatalf("error 路径的 JSON 数组输出非法: %v (%s)", err, ab.String())
+	}
+	if len(arr) != 1 || arr[0]["error"] == nil {
+		t.Errorf("数组模式应只有 error chunk: %s", ab.String())
+	}
+}

@@ -11,6 +11,7 @@ package upstream
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -43,6 +44,10 @@ func GatewayHint(kind ErrKind, msg string, ctx HintContext) string {
 		return "image data rejected by upstream; use a real/valid image, may need a new conversation"
 	}
 	switch kind {
+	case ErrToolMismatch:
+		// 11148：上游判定该对话的工具调用记录已损坏。网关已自动剥离工具历史重试过一次
+		// （自愈），仍失败说明上游对该会话的判定不可修复——唯一出路是新建会话。
+		return "conversation tool records are inconsistent at upstream (corrupted history); start a new conversation/task, retrying the same one will not help"
 	case ErrPromptTooLong:
 		return "request context exceeds the model's limit; reduce history/message size"
 	case ErrImageInvalid:
@@ -100,19 +105,30 @@ func FrameHintFunc(ctxFn func() HintContext) func(string) string {
 }
 
 // FrameKind 从 SSE error 帧 payload 判定 ErrKind：6004 模型级限流的流式形态
-// （IsModelRateLimit 对帧 JSON 直接命中）优先；其余取帧内 error.message 走
-// Classify（请求级 400 口径）。判不出 → ErrNone（无 hint）。
+// （IsModelRateLimit 对帧 JSON 直接命中）优先；其余把帧内 code/message 还原成上游
+// 信封体走 Classify（与 400 错误体同源口径：11148 工具记录不匹配、11102、11115 等
+// 业务码在流式形态里同样要认出来，否则流内失败只能落到宽泛的兜底分类）；再回落
+// 仅按 error.message 文本分类。判不出 → ErrNone（无 hint）。
 func FrameKind(payload string) ErrKind {
 	if IsModelRateLimit(payload) {
 		return ErrSoftRate
 	}
 	var f struct {
 		Error struct {
+			Code    any    `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
 	}
 	if json.Unmarshal([]byte(payload), &f) != nil || f.Error.Message == "" {
 		return ErrNone
+	}
+	if f.Error.Code != nil {
+		code := strings.TrimSpace(fmt.Sprint(f.Error.Code))
+		if raw, err := json.Marshal(map[string]any{"code": code, "msg": f.Error.Message}); err == nil {
+			if k := Classify(http.StatusBadRequest, string(raw)); k != ErrNone {
+				return k
+			}
+		}
 	}
 	return Classify(http.StatusBadRequest, f.Error.Message)
 }

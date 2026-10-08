@@ -229,3 +229,96 @@ func TestResponsesStreamIncompleteOnLength(t *testing.T) {
 		t.Errorf("incomplete_details=%v", resp["incomplete_details"])
 	}
 }
+
+// TestResponsesStreamDropsTruncatedFunctionArguments 上游流被掐断时残留的 arguments 是
+// 残缺 JSON：该 function_call item **不得下发**（不补 done 事件、也不进 completed 快照），
+// 否则 Codex 会把它持久化进会话、之后每次请求都被上游判「工具记录已损坏」（11148）。
+func TestResponsesStreamDropsTruncatedFunctionArguments(t *testing.T) {
+	var sb strings.Builder
+	st := NewResponsesStream(&sb, nil, "m")
+	truncated := map[string]any{"index": float64(0), "id": "call_1", "type": "function",
+		"function": map[string]any{"name": "shell", "arguments": `{"cmd":"ls`}}
+	_ = st.Frame(map[string]any{"choices": []any{map[string]any{"index": float64(0),
+		"delta": map[string]any{"tool_calls": []any{truncated}}}}})
+	_ = st.Finish()
+
+	events := parseSSEEvents(t, sb.String())
+	for _, e := range events {
+		if e.event != "response.output_item.done" {
+			continue
+		}
+		if item, _ := e.data["item"].(map[string]any); item != nil && item["type"] == "function_call" {
+			t.Fatalf("残缺参数的 function_call 被下发: %v", item)
+		}
+	}
+	// completed 快照里同样不能出现该调用。
+	last := events[len(events)-1]
+	if last.event != "response.completed" {
+		t.Fatalf("收尾=%v", last.event)
+	}
+	resp, _ := last.data["response"].(map[string]any)
+	for _, it := range asSlice(resp["output"]) {
+		if item, _ := it.(map[string]any); item != nil && item["type"] == "function_call" {
+			t.Errorf("completed 快照里残留残缺调用: %v", item)
+		}
+	}
+	// 完整参数的调用不受影响（护栏只拦残缺）。
+	var sb2 strings.Builder
+	st2 := NewResponsesStream(&sb2, nil, "m")
+	complete := map[string]any{"index": float64(0), "id": "call_2", "type": "function",
+		"function": map[string]any{"name": "shell", "arguments": `{"cmd":"ls"}`}}
+	_ = st2.Frame(map[string]any{"choices": []any{map[string]any{"index": float64(0),
+		"delta": map[string]any{"tool_calls": []any{complete}}}}})
+	_ = st2.Finish()
+	if !strings.Contains(sb2.String(), `"type":"function_call"`) {
+		t.Errorf("完整参数的调用被误伤: %s", sb2.String())
+	}
+}
+
+// TestResponsesToOpenAICustomToolItemsSymmetric Codex 的非 function 工具记录
+// （custom_tool_call / custom_tool_call_output，如 apply_patch）无 Chat 等价物：
+// **两侧一起丢弃**——只丢一侧就会留下半截配对，那正是上游 11148 的触发形态。
+func TestResponsesToOpenAICustomToolItemsSymmetric(t *testing.T) {
+	body := []byte(`{"model":"m","input":[` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},` +
+		`{"type":"custom_tool_call","call_id":"ct1","name":"apply_patch","input":"*** Begin Patch"},` +
+		`{"type":"custom_tool_call_output","call_id":"ct1","output":"ok"}]}`)
+	out, _, err := ResponsesToOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _ := obj["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages=%v（两侧应一起丢弃，只留 user）", msgs)
+	}
+	if m, _ := msgs[0].(map[string]any); m["role"] != "user" {
+		t.Errorf("残留消息=%v", m)
+	}
+}
+
+// TestResponsesStreamErrorIsTerminal error 帧转 response.failed 后不得再补
+// response.completed：失败已是终态，两个矛盾的终态事件会让客户端（Codex）以"完成"
+// 为准，把失败读成"回答完成但输出为空"——即「有输入、没有返回」。
+func TestResponsesStreamErrorIsTerminal(t *testing.T) {
+	var sb strings.Builder
+	st := NewResponsesStream(&sb, nil, "m")
+	_ = st.Frame(map[string]any{"choices": []any{map[string]any{
+		"index": float64(0), "delta": map[string]any{"content": "半截"}}}})
+	_ = st.ErrorFrame(map[string]any{"code": "upstream_truncated", "message": "boom"})
+	_ = st.Finish()
+
+	events := parseSSEEvents(t, sb.String())
+	names := eventNames(events)
+	if last := events[len(events)-1]; last.event != "response.failed" {
+		t.Fatalf("收尾=%v want response.failed", names)
+	}
+	for _, e := range events {
+		if e.event == "response.completed" {
+			t.Errorf("response.failed 之后不得有 response.completed: %v", names)
+		}
+	}
+}

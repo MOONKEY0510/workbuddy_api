@@ -514,6 +514,7 @@ type GeminiStream struct {
 	model string
 
 	finished bool
+	failed   bool // 已写 error chunk（终态）：收尾不得再补工具/终止 chunk
 	// 工具调用累积：index → {name, args}
 	toolOrder []int
 	toolName  map[int]string
@@ -613,7 +614,10 @@ func (s *GeminiStream) Frame(chunk map[string]any) error {
 }
 
 // ErrorFrame 处理 OpenAI error 帧：Gemini 无流内错误事件，转为带 error 的 chunk。
+// 该 chunk 即终态（StreamHint/收尾都不再补成功语义的终止 chunk），客户端不会把失败
+// 读成"正常结束但内容为空"。
 func (s *GeminiStream) ErrorFrame(errObj map[string]any) error {
+	s.failed = true
 	msg := asString(errObj["message"])
 	if msg == "" {
 		msg = jsonString(errObj)
@@ -628,11 +632,16 @@ func (s *GeminiStream) ErrorFrame(errObj map[string]any) error {
 }
 
 // Finish 收尾：发出累积的工具调用与终止 chunk（幂等）。
+// 已写过 error chunk 时直接结束：不能再补 finishReason 的终止 chunk（那等于宣告
+// "正常结束"，与 error 互相矛盾）。
 func (s *GeminiStream) Finish() error {
 	if s.finished {
 		return nil
 	}
 	s.finished = true
+	if s.failed {
+		return s.cw.Finish()
+	}
 	if len(s.toolOrder) > 0 {
 		parts := make([]any, 0, len(s.toolOrder))
 		for _, idx := range s.toolOrder {

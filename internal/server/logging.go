@@ -88,7 +88,15 @@ type chatStatsReader struct {
 	cacheWriteTokens   int
 	hasReasoningTokens bool
 	reasoningTokens    int
-	pend               []byte // 已读未返回的行缓存
+	// 流结束证据：没有它，「上游 200 但没给 usage」的尝试只能记成一条无详情失败
+	// （面板「调用记录」显示"未知 / HTTP 状态 —"，排障无从下手——Codex 场景实测
+	// 大量此类行）。三项证据把「客户端主动断开 / 上游断流 / 流内 error 帧」分开。
+	sawDone    bool   // 上游显式发过 data: [DONE]（正常收尾）
+	sawContent bool   // 出现过正文/思考/工具调用增量（客户端至少拿到了一部分）
+	errFrame   bool   // 流内透出的 error 帧（200 开流后的失败）
+	errCode    string // error 帧 code（原文，缺省空串）
+	errMsg     string // error 帧 message（原文）
+	pend       []byte // 已读未返回的行缓存
 }
 
 // newChatStatsReaderSince 以 since 为 TTFB 计时起点（通常是请求进入 handler 的时刻）。
@@ -104,6 +112,18 @@ func (s *chatStatsReader) Tokens() (int, bool) { return s.completionTokens, s.ha
 
 // Credit 返回末帧 usage.credit（本次真实扣费积分）与是否缺失。
 func (s *chatStatsReader) Credit() (float64, bool) { return s.credit, s.hasCredit }
+
+// SawDone 上游是否显式发过 data: [DONE]（正常收尾；漏发 = 断流，见 handler 流式归因）。
+func (s *chatStatsReader) SawDone() bool { return s.sawDone }
+
+// SawContent 流中是否出现过正文/思考/工具调用增量。
+func (s *chatStatsReader) SawContent() bool { return s.sawContent }
+
+// ErrorFrame 返回流内透出的 error 帧（code, message, 是否存在）。流式失败的主证据：
+// 「调用记录」的失败分类/原文由此得出，而不是笼统的"未知"。
+func (s *chatStatsReader) ErrorFrame() (code, msg string, ok bool) {
+	return s.errCode, s.errMsg, s.errFrame
+}
 
 // TotalTokens 返回末帧 usage.total_tokens 与是否缺失。
 func (s *chatStatsReader) TotalTokens() (int, bool) { return s.totalTokens, s.hasTotalTokens }
@@ -134,6 +154,7 @@ func (s *chatStatsReader) parseSSELine(line string) {
 	}
 	payload := strings.TrimPrefix(line, "data: ")
 	if payload == "[DONE]" {
+		s.sawDone = true
 		return
 	}
 	if !s.seen {
@@ -155,8 +176,48 @@ func (s *chatStatsReader) parseSSELine(line string) {
 			CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
 			CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
 		} `json:"usage"`
+		// Error 用 RawMessage：上游 error 形态既有对象也有字符串，定长结构体会让
+		// 其中一个形态 unmarshal 失败（连 usage 一起丢）。
+		Error json.RawMessage `json:"error"`
+		Choices []struct {
+			Delta *struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				ToolCalls        []any  `json:"tool_calls"`
+			} `json:"delta"`
+		} `json:"choices"`
 	}
-	if json.Unmarshal([]byte(payload), &chunk) != nil || chunk.Usage == nil {
+	if json.Unmarshal([]byte(payload), &chunk) != nil {
+		return
+	}
+	// 流内 error 帧：200 已开流后的失败（内容拦截 / 限流 / 内部错误）。它是这条流
+	// 唯一的失败原因来源，必须留下 code/message 供「调用记录」归因。
+	if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+		s.errFrame = true
+		var e struct {
+			Code    any    `json:"code"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(chunk.Error, &e) == nil {
+			if e.Code != nil {
+				s.errCode = strings.TrimSpace(fmt.Sprint(e.Code))
+			}
+			s.errMsg = strings.TrimSpace(e.Message)
+		}
+		if s.errMsg == "" {
+			// 字符串形态 / 无法解码对象：原文（去引号）就是唯一可读信息。
+			s.errMsg = strings.Trim(strings.TrimSpace(string(chunk.Error)), `"`)
+		}
+	}
+	for _, c := range chunk.Choices {
+		if c.Delta == nil {
+			continue
+		}
+		if c.Delta.Content != "" || c.Delta.ReasoningContent != "" || len(c.Delta.ToolCalls) > 0 {
+			s.sawContent = true
+		}
+	}
+	if chunk.Usage == nil {
 		return
 	}
 	if chunk.Usage.PromptTokens != nil {

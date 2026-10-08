@@ -744,14 +744,21 @@ func TestStreamGarbageAfterDone(t *testing.T) {
 }
 
 // TestStreamNormalPassthroughRegression 校验正常透传回归：帧被 normalize 后透传、
-// 末尾恰好一个 [DONE]、无 error 帧；上游漏发 DONE 时自动补。
+// 末尾恰好一个 [DONE]；上游漏发 DONE 时分两种形态——带收尾 usage 的照旧只补 [DONE]
+// （正常收尾，无 error 帧），没有收尾 usage 的判为断流并补一帧 error（否则客户端把
+// 半截/空回答当正常结束，Codex 侧表现为「有输入、没有返回」）。
 func TestStreamNormalPassthroughRegression(t *testing.T) {
 	cases := []struct {
-		name string
-		raw  string
+		name      string
+		raw       string
+		wantError bool
 	}{
-		{"带 DONE 的正常流", sseFixture},
-		{"漏发 DONE 自动补", "data: {\"id\":\"x1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"},
+		{"带 DONE 的正常流", sseFixture, false},
+		{"漏发 DONE 但带收尾 usage 自动补",
+			"data: {\"id\":\"x1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+				"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n", false},
+		{"漏发 DONE 且无收尾 usage = 断流补 error",
+			"data: {\"id\":\"x1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -760,8 +767,11 @@ func TestStreamNormalPassthroughRegression(t *testing.T) {
 				t.Fatal(err)
 			}
 			body := rec.Body.String()
-			if strings.Contains(body, `"error"`) {
-				t.Errorf("unexpected error frame: %q", body)
+			if got := strings.Contains(body, `"error"`); got != c.wantError {
+				t.Errorf("error frame=%v want %v: %q", got, c.wantError, body)
+			}
+			if c.wantError && !strings.Contains(body, "upstream_truncated") {
+				t.Errorf("断流应带 upstream_truncated 码: %q", body)
 			}
 			if n := strings.Count(body, "data: [DONE]"); n != 1 {
 				t.Errorf("[DONE] count=%d want 1: %q", n, body)

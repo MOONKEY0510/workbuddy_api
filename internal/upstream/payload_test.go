@@ -29,8 +29,11 @@ func TestNormalizeRoles(t *testing.T) {
 			`{"messages":[{"role":"user","content":"x"}]}`, []string{"user"}},
 		{"assistant 原样保留",
 			`{"messages":[{"role":"assistant","content":"x"}]}`, []string{"assistant"}},
-		{"tool 原样保留（不因未知而改写）",
-			`{"messages":[{"role":"tool","content":"x"}]}`, []string{"tool"}},
+		// tool 角色本身不被改写；带 tool_call_id 的配对完整记录原样穿过
+		// （无 id / 无配对的 tool 消息由 tool_pairing 规范化剔除，见 tool_pairing_test.go）。
+		{"tool 原样保留（配对完整，不因未知而改写）",
+			`{"messages":[{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c1","content":"x"}]}`,
+			[]string{"assistant", "tool"}},
 		{"messages 缺失不 panic 且其余字段不变",
 			`{"model":"glm-5.2"}`, []string{}},
 		{"messages 为空数组不 panic",

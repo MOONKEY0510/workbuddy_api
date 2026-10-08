@@ -21,7 +21,7 @@ type Entry struct {
 	Nick   string `json:"nick,omitempty"`   // 昵称（无则前端退回 uid 前 8 位）
 	Realm  string `json:"realm"`            // cn / global
 	Model  string `json:"model"`            // 裸模型名
-	OK     bool   `json:"ok"`               // 是否拿到 usage（与用量视图同口径）
+	OK     bool   `json:"ok"`               // 本次尝试是否成功（与用量视图同口径：不由"有没有 usage"推出）
 	Status int    `json:"status,omitempty"` // HTTP 状态；0 = 未知（未走到最终分支）
 
 	LatencyMs int64 `json:"latency_ms"`

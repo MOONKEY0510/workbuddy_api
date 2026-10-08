@@ -69,9 +69,15 @@ func (p *Pool) ReviveDisabled(uid string) {
 	}
 }
 
-// Revive 运维口径的"无条件恢复"：清禁用、冷却（含软退避计数）与熔断运行态。
+// Revive 运维口径的"无条件恢复"：清禁用、冷却（含软退避计数）、熔断运行态与连败降权。
 // 与 ReviveDisabled（只清禁用）和 ReenableIfCredits（只清冷却、不动熔断）的区别：
 // 本方法清除全部惩罚状态，供管理面板"解冻"按钮使用——人工判断该号可用时一键恢复。
+//
+// 连败降权（consecutiveFails/degradeUntil）必须一并清：面板对"降权中"的账号同样
+// 显示「解冻」按钮（frozen = disabled || cool > 0，降权计入 cool），若只清冷却/熔断，
+// 点完按钮账号仍被 degradeUntil 挡在池外——表现为「连败降权解不了封」，运维只能等
+// 降权期自然到期。人工解冻的语义是"恢复该号"，降权是四种惩罚里最弱的一种，没有理由
+// 比熔断/冷却活得更久。
 // uid 不存在返回 false（供调用方区分"账号不存在"与"已复活"）。
 func (p *Pool) Revive(uid string) bool {
 	p.mu.Lock()
@@ -90,6 +96,8 @@ func (p *Pool) Revive(uid string) bool {
 	e.fails = 0
 	e.retryCount = 0
 	e.breakerUntil = time.Time{}
+	e.consecutiveFails = 0
+	e.degradeUntil = time.Time{}
 	p.dirty.Store(true)
 	return true
 }

@@ -40,6 +40,7 @@ const (
 	ErrWafBlock                      // 403 + 非业务信封体（APISIX WAF 拦截页/空体）→ 账号软冷却 + 抖动退避
 	ErrPromptTooLong                 // 11115「prompt is too long」→ 请求级错误（上下文超限是请求的问题非账号的问题）：不罚号、不轮转，末端透传原文
 	ErrImageInvalid                  // 图片请求格式/数据无效 → 请求级错误：不罚号、不轮转，末端透传原文
+	ErrToolMismatch                  // 11148「tool calls and tool results do not match」→ 对话工具记录损坏（请求内容问题）：不罚号、不轮转，剥离工具历史自愈重试
 	ErrClient                        // 其他 4xx / 业务错误
 )
 
@@ -67,6 +68,8 @@ func (k ErrKind) String() string {
 		return "prompt_too_long"
 	case ErrImageInvalid:
 		return "image_invalid"
+	case ErrToolMismatch:
+		return "tool_mismatch"
 	case ErrAccountFault:
 		return "account_fault"
 	case ErrClient:
@@ -199,6 +202,35 @@ func isPromptTooLongStatus(status int) bool {
 // 网络层/解析层错误不在此识别（见 IsAlreadyCheckin）。
 var alreadyCheckinMarkers = []string{"已签到", "already"}
 var badParamsMarkerCode = `"code":11101`
+
+// toolMismatchCode / toolMismatchMarkers 上游「工具调用记录对不上」的判定依据：
+// 业务码 11148 + 文案（中英两形态，displayMsg 里给的是中文）。
+//
+// 语义：对话历史里的 assistant.tool_calls 与 role:tool 结果在**上游侧**对不上
+// （客户端会话存档被中断/截断写坏）。这是请求内容的问题——同一个 body 换任何账号
+// 都会被同样拒绝（上游 displayTips 明确写「重试无效，请新建任务」）——因此不得
+// 归 ErrClient（那会喂连败降权：一条坏会话足以把整池账号逐个降权出池，且每次重试
+// 都重新计罚，账号看起来"永远解不了封"）。
+const toolMismatchCode = "11148"
+
+var toolMismatchMarkers = []string{
+	"tool calls and tool results do not match",
+	"工具记录不完整",
+}
+
+// isToolMismatch 判定上游 body 是否 11148（code 或中英文文案形态）。
+func isToolMismatch(body string) bool {
+	lower := strings.ToLower(body)
+	if codeMarker(lower, toolMismatchCode) {
+		return true
+	}
+	for _, m := range toolMismatchMarkers {
+		if strings.Contains(body, m) || strings.Contains(lower, strings.ToLower(m)) {
+			return true
+		}
+	}
+	return false
+}
 
 // softRateResetLoc 上游 429 6004 文案中的重置时间固定按 UTC+8 解释（上游文案如此，
 // 与容器时区无关）。
@@ -537,6 +569,13 @@ func Classify(status int, body string) ErrKind {
 				return ErrPromptTooLong
 			}
 		}
+	}
+	// 11148「tool calls and tool results do not match」：请求级**终态**错误，判在
+	// 404/5xx/通用 4xx 兜底之前——一是它的语义最具体（对话工具记录已损坏，换号
+	// 也一样），二是上游可能把它包在别的状态码里（实测 extError.StatusCode=400，
+	// 但同族错误也见过 5xx 外壳），落到 ErrServer/ErrClient 都会误罚账号。
+	if isToolMismatch(body) {
+		return ErrToolMismatch
 	}
 	if status == http.StatusNotFound {
 		return ErrNotFound

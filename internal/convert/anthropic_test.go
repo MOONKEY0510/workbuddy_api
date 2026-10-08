@@ -277,8 +277,15 @@ func TestAnthropicStreamThinkingAndError(t *testing.T) {
 	}
 	events := parseSSEEvents(t, sb.String())
 	names := eventNames(events)
-	if names[len(names)-1] != "message_stop" {
-		t.Errorf("收尾应为 message_stop: %v", names)
+	// error 事件是流的终态：其后不得再发 message_delta/message_stop——补收尾事件会让
+	// 客户端把失败读成"回答完成但内容为空"（Codex/Claude Code 侧表现为有输入没返回）。
+	if names[len(names)-1] != "error" {
+		t.Errorf("error 事件应为最后一个事件（不得补 message_stop）: %v", names)
+	}
+	for _, n := range names {
+		if n == "message_stop" || n == "message_delta" {
+			t.Errorf("error 之后不应出现收尾事件: %v", names)
+		}
 	}
 	found := false
 	for _, e := range events {

@@ -1835,6 +1835,8 @@ const CALLS_KIND = {
   bad_params: '请求参数错误', account_fault: '账号级故障', model_blocked: '模型不可用',
   waf_block: 'WAF 拦截', prompt_too_long: '上下文超限', image_invalid: '图片无效',
   client: '客户端/业务错误', transport: '网络传输错误', upstream_parse: '上游响应解析失败',
+  client_abort: '客户端中断（非账号问题）', upstream_truncated: '上游断流',
+  upstream_error: '上游流内错误', tool_mismatch: '工具记录不匹配（需新建会话）',
 };
 const callsKindName = k => CALLS_KIND[k] || k || '未知';
 
@@ -1865,7 +1867,9 @@ function callsFields(e) {
 }
 function callsMatch(e) {
   if (callsFilter.state === 'ok' && !e.ok) return false;
-  if (callsFilter.state === 'fail' && e.ok) return false;
+  // 「只看失败」= 只看真失败：客户端中断（client_abort，Codex/CC-Switch 主动断开、
+  // 用户 Esc）不是失败，也不该混进待排查列表——否则一屏全是这类行，真失败被淹没。
+  if (callsFilter.state === 'fail' && (e.ok || e.kind === 'client_abort')) return false;
   const q = callsFilter.q.trim().toLowerCase();
   if (!q) return true;
   const f = callsFields(e);

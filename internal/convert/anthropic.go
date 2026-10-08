@@ -468,6 +468,7 @@ type AnthropicStream struct {
 
 	started  bool
 	finished bool
+	failed   bool   // 已发 error 事件（终态）：收尾不得再补 message_delta/message_stop
 	curKind  string // "" / "text" / "thinking" / "tool"
 	curIndex int    // Anthropic content block index（从 0 起递增分配）
 	curTool  int    // 当前 tool 块对应的 OpenAI tool_calls index
@@ -669,7 +670,11 @@ func (s *AnthropicStream) Frame(chunk map[string]any) error {
 }
 
 // ErrorFrame 处理 OpenAI error 帧（error-passthrough）：转成 Anthropic error 事件。
+//
+// Anthropic 协议里 error 事件是流的**终态**：其后不得再发 message_delta/message_stop，
+// 否则客户端（Claude Code / anthropic-sdk）可能把失败读成"回答完成但内容为空"。
 func (s *AnthropicStream) ErrorFrame(errObj map[string]any) error {
+	s.failed = true
 	msg := asString(errObj["message"])
 	if msg == "" {
 		msg = jsonString(errObj)
@@ -685,11 +690,16 @@ func (s *AnthropicStream) ErrorFrame(errObj map[string]any) error {
 }
 
 // Finish 收尾：关闭打开的块 + message_delta + message_stop（幂等）。
+// 已发过 error 事件（终态）时直接结束——补收尾事件会让客户端把失败读成
+// "回答完成但内容为空"（详见 ErrorFrame 注释）。
 func (s *AnthropicStream) Finish() error {
 	if s.finished {
 		return nil
 	}
 	s.finished = true
+	if s.failed {
+		return nil
+	}
 	if err := s.ensureStart(); err != nil {
 		return err
 	}

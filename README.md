@@ -246,6 +246,10 @@ curl -s http://localhost:7863/v1/chat/completions \
 | **弹窗底部圆角尖角** | `index.html`：`.dlg` 缺 `overflow: hidden`，footer 的 `surface-2` 背景方角从圆角外露出（弹窗底部两角「尖角」）；补裁剪，内部滚动仍由 `.body` 自身承担 |
 | **到期分布轨道被钳成 92px** | `index.html`：全局 `.bar`（账号池积分条）带 `max-width: 92px; margin-top: 6px`，同名类漏进 `.pkx-row .bar`（与 v1.9.0 `.us-wrapbar` 同一坑）；显式 `max-width: none; margin: 0` 抵消 |
 | **升级后浏览器沿用旧前端** | `internal/panel/index.go`：`index.html` / `app.js` 是 go:embed 静态资源（无 ETag / Last-Modified 可校验），加 `Cache-Control: no-store`——否则升级二进制后浏览器可能继续用旧缓存，表现为「新功能不出现」需手动强刷 |
+| **连败降权「自己解不了封」** | 三处根因：① `internal/server/handler.go` 传输层失败分支无条件 `NoteFailures`——客户端（Codex / CC-Switch 代理）中途断开时 ctx 已取消，那是"客户端走了"不是账号失败，却每次给被选中的账号记一笔连败，几次之后整池账号逐个被降权；现按 `r.Context().Err()` 先行分流为 `client_abort`（不喂连败、不换号）。② 上游 11148 这类**请求内容**级错误过去落 `ErrClient` → 同样喂连败（一条坏会话把整池拖下水）；现单列 `ErrToolMismatch` 零惩罚。③ 面板「解冻」对降权号同样可见（`frozen = disabled \|\| cool>0`），但 `Pool.Revive` 不清 `consecutiveFails/degradeUntil`，点完按钮账号仍被挡在池外——现一并清除（`internal/pool/state.go`） |
+| **Codex 撞 11148 顶死整条会话** | 上游 400 `code=11148`（tool calls and tool results do not match，提示「请新建任务，直接重试无效」）。kimi / deepseek 都命中，说明是**形态问题不是模型问题**，因此按「出站工具记录必须是规范形态」做通用加固（`internal/upstream/tool_pairing.go` / `internal/convert/responses.go`）：① 批内 id 去重、结果按**调用顺序**落位（并行调用按完成顺序回填 = 判配对断裂）、早到/重复/孤儿结果剔除、插在结果之间的消息后移；② **请求级 call id 唯一**——重复 id（长会话里模型按轮复用 `call_0`/`call_1` 这类序号 id）改写为唯一值，调用与其结果**同步改写**（上游按 id 匹配调用/结果，重复即判"对不上"）；③ **残缺 arguments 的调用两侧剔除**：流被掐断留下的半截参数（`{"cmd":"ls`）过去会被下发，客户端持久化后每次重放、上游永远判「内容已损坏」——现在 Responses 编码器在 `output_item.done` 前做 JSON 校验，残缺调用**不下发**（客户端侧该 item 永不完成、不进历史），出站规范化也把这类记录整体剔除；④ `custom_tool_call(_output)` 等无 Chat 等价物的 item **两侧一起丢弃**（只丢一侧就会留半截配对）；⑤ 新增 `ErrToolMismatch` 分类（`client.go` / `hint.go`，认 code 11148 与中英文案），handler 首遇时**剥离工具历史自愈重试一次**（`StripToolTraffic`，同一账号、不罚号），仍失败则 400 透传原文 + `gateway_hint`（新建会话指向）、不轮换账号；⑥ 命中 11148 时打印出站**工具记录形状**（`upstream.DiagnoseToolRecords`：`calls/results/dup_ids/bad_args/unpaired_calls/orphan_results`），把上游那句笼统的"对不上"落成可核对的数字 |
+| **「调用记录」大量无详情失败行** | 流式结局过去只看"有没有拿到 usage"：上游 200 后断流、客户端中途断开、上游漏发 usage 三种结局全落成"分类未知 / HTTP 状态 —"的空失败行（Codex 场景实测大量出现，真失败反被淹没）。现由 `internal/server/logging.go` 的 `chatStatsReader` 采集流内证据（`[DONE]` / error 帧 code+message / 内容增量），handler 按优先级归因：流内 error 帧 → 按上游 code 分类（6004 / 11148 等与 400 错误体同源口径）· 客户端断开 → `client_abort`（499，面板「只看失败」不再计入）· 空流 → `upstream_parse` · 断流 → `upstream_truncated`；正常收尾（含上游漏发 usage）一律记成功 |
+| **Codex「有输入、没有返回」** | 三处成因，全部落在这个形状上（输入有值、输出为空、客户端看不到任何报错）：① `internal/upstream/sse.go` 的 `StreamHint` 在上游流被掐断（EOF，无 `data: [DONE]`）时**静默补一个 `[DONE]`**，客户端把"流正常结束"当成模型的完整回答；现跟踪 `[DONE]` 与**收尾口径 usage**（completion/total，只报 prompt_tokens 不算），判为断流时补一帧 `upstream_truncated` error——上游漏发 `[DONE]` 但按规范给了 usage 的正常收尾不受影响。② `internal/convert`（Responses / Anthropic / Gemini）在 error 帧之后仍补成功语义的收尾事件（`response.completed` / `message_stop` / 带 `finishReason` 的终止 chunk），Codex 以"完成"为准 → 读成"完成但空输出"；现 error 事件为**终态**，`Finish()` 不再补。③ handler 的"正常收尾"判据改为 total/completion usage，只报 prompt_tokens 的 usage 帧不再把断流掩盖成成功（这类行现在输入保留、输出为空、且带明确失败分类） |
 
 ## 🎯 成长任务一键完成（17/18）
 
@@ -357,7 +361,7 @@ flowchart LR
 | `upstash.url` / `upstash.token` | 空 | 空 = 纯内存模式（Noop 降级，功能照常） |
 | `pool.max_in_flight` | `3` | 单账号最大在途请求数（`0` = 不限） |
 | `pool.max_in_flight_global` | `2` | global 域单账号在途上限（国际版 WAF 风控更紧，压低并发） |
-| `pool.degrade_threshold` | `5` | 连败降权阈值：未知错误（ErrClient/传输层）连败 N 次临时出池 |
+| `pool.degrade_threshold` | `5` | 连败降权阈值：**真**未知失败（ErrClient / 传输层抖动，即"客户端还在但不知道原因"）连败 N 次临时出池。客户端主动断开（ctx 取消）与请求内容级错误（11148 / 11115 等）不喂本计数 |
 | `pool.degrade_cooldown` / `pool.degrade_cooldown_max` | `10m` / `2h` | 连败降权时长与上限钳制 |
 | `pool.expiring_soon` | `168h` | 快过期积分窗口：窗口内到期的积分标记「快过期」，选号时优先消耗；空 / `0` = 禁用分桶 |
 | `pool.cost_explore_interval` | `30m` | costTier 条件探索窗口：免费层垄断且存在未知号时，每窗口把一个真实请求搭车改道给未知号（零新增上游请求；成功即毕业，失败走既有错误策略）。`0` = 关停 |

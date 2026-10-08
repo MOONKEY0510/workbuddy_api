@@ -561,6 +561,8 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string) 
 
 	br := bufio.NewReaderSize(r, 64*1024)
 	validFrames := 0
+	sawDone := false        // 上游显式发过 data: [DONE]
+	sawFinalUsage := false  // 上游给过带 completion/total 的 usage 帧（= 流式正常收尾信号）
 readLoop:
 	for {
 		line, err := br.ReadString('\n')
@@ -569,9 +571,14 @@ readLoop:
 		case strings.HasPrefix(trimmed, "data: [DONE]"):
 			// 上游显式结束：停止读取，DONE 之后的任何数据（含垃圾帧）一律不再透传。
 			// [DONE] 统一在循环结束后写出，保证恰好一个。
+			sawDone = true
 			break readLoop
 		case strings.HasPrefix(trimmed, "data: "):
-			n, werr := writeFrame(strings.TrimPrefix(trimmed, "data: "))
+			payload := strings.TrimPrefix(trimmed, "data: ")
+			if usageHasCompletionOrTotal(payload) {
+				sawFinalUsage = true
+			}
+			n, werr := writeFrame(payload)
 			validFrames += n
 			if werr != nil {
 				return werr
@@ -599,6 +606,15 @@ readLoop:
 	// 且 writeRaw 的 hintFn 闭包在空流路径下可能携带上一帧的上下文造成误配。
 	if validFrames == 0 {
 		_ = writeRaw(`{"error":{"message":"empty upstream stream","type":"upstream_error","code":"upstream_parse"}}`)
+	} else if !sawDone && !sawFinalUsage {
+		// 上游把流掐在半路（EOF 收尾，既没给 data: [DONE] 也没给带 completion/total
+		// 的 usage 帧）：不能静默补一个 [DONE] 就完事——客户端会把"流正常结束"
+		// 当成模型的完整回答，于是表现为「有输入、没有返回」（空回答且无任何报错，
+		// Codex 侧尤其明显：会收到 response.completed + 空 output）。
+		// 这里补一帧 error 把真实结局告诉客户端；仍是 200 已开流，只能靠流内事件收敛
+		// （与空流兜底同哲学）。上游漏发 [DONE] 但按规范给了 usage 的正常收尾不受影响
+		// （sawFinalUsage=true 时不补），避免把好流误报成失败。
+		_ = writeRaw(`{"error":{"message":"upstream stream ended before completion (no [DONE] / usage frame)","type":"upstream_error","code":"upstream_truncated"}}`)
 	}
 	// 保证恰好写一个 [DONE]（上游漏发时兜底补上）。
 	if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
@@ -611,6 +627,27 @@ readLoop:
 		return errEmptyStream
 	}
 	return nil
+}
+
+// usageHasCompletionOrTotal 报告一帧 SSE payload 是否携带「收尾口径」的 usage
+// （completion_tokens / total_tokens 至少其一）。这是 OpenAI 流式正常收尾的信号
+// （网关出站自带 stream_options.include_usage，官方 CLI 也这样发）；只有 prompt_tokens
+// 的 usage 帧（有的上游开流就给一份）不能当作收尾证据——据此把"漏发 [DONE] 的正常收尾"
+// 与"被掐断的断流"分开。非 usage 帧走 strings.Contains 快路径，不额外 JSON 解析。
+func usageHasCompletionOrTotal(payload string) bool {
+	if !strings.Contains(payload, `"usage"`) {
+		return false
+	}
+	var chunk struct {
+		Usage *struct {
+			CompletionTokens *int `json:"completion_tokens"`
+			TotalTokens      *int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal([]byte(payload), &chunk) != nil || chunk.Usage == nil {
+		return false
+	}
+	return chunk.Usage.CompletionTokens != nil || chunk.Usage.TotalTokens != nil
 }
 
 // frameGatewayHint 取 error 帧的 gateway_hint（hintFn 缺失/异常返回空串 → 不附加）。
