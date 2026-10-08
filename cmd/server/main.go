@@ -36,7 +36,7 @@ import (
 //
 // 透出到 /panel/api/overview（面板侧栏显示 v1.12.0-zhima）与 CI 的一致性断言
 // （.github/workflows/go-binaries.yml：二进制必须含本串、tag 必须等于剥掉后缀的版本）。
-const appVersion = "1.12.4-zhima"
+const appVersion = "1.12.5-zhima"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
