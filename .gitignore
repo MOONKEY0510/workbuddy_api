@@ -56,3 +56,6 @@ SPEC.md
 
 # 本地验证工具（判据逆向过程脚本，结论沉淀于 data/desktop-task-protocol.md）
 /cmd/desktopverify*/
+
+# 博客素材（图片与生成脚本，本地留存，不进版本库）
+/blog-assets/
