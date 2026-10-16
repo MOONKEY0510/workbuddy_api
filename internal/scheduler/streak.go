@@ -41,8 +41,9 @@ func (s *Scheduler) streakBonusAccount(a *auth.Auth) {
 	if credit, err := s.cfg.Upstream.ClaimGift(a); err == nil {
 		log.Printf("streak-bonus %s: 🎊 新手礼包 +%dc", logfmt.Label(a.UID, a.Nickname), credit)
 	}
-	if credit, err := s.cfg.Upstream.ClaimCompensation(a); err == nil {
-		log.Printf("streak-bonus %s: 🎊 补偿领取 +%dc", logfmt.Label(a.UID, a.Nickname), credit)
+	// 补偿响应无 data（{"code":0,"msg":"OK"}），金额不透出，到账以余额刷新为准。
+	if err := s.cfg.Upstream.ClaimCompensation(a); err == nil {
+		log.Printf("streak-bonus %s: 🎊 补偿已领取", logfmt.Label(a.UID, a.Nickname))
 	}
 
 	full, err := s.cfg.Upstream.GrowthStreakFull(a)

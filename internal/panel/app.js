@@ -1815,6 +1815,57 @@ async function loadUsage() {
 if ($('btnUsage')) $('btnUsage').onclick = loadUsage;
 if ($('usWindow')) $('usWindow').onchange = loadUsage;
 
+/* ── 积分补偿领取（官方「用量管理」同款入口，全账号批量）───────────────── */
+/* 上游成功响应无 data（{"code":0,"msg":"OK"}），金额不透出；
+   「领取前/后/差额」由后端在领取前后各刷新一次余额得出。 */
+const compStatusText = {
+  claimed: '领取成功',
+  unchanged: '无新增（已领过或异步到账）',
+  skipped: '跳过',
+  error: '失败',
+};
+function renderCompensation(rows) {
+  const wrap = $('compWrap');
+  if (!wrap) return;
+  wrap.hidden = !(rows && rows.length);
+  if (!rows || !rows.length) { $('compBody').innerHTML = ''; return; }
+  $('compBody').innerHTML = rows.map(it => {
+    const st = it.status || 'error';
+    const showNum = st === 'claimed' || st === 'unchanged';
+    const markStyle = (st === 'unchanged' || st === 'skipped') ? ' style="background:var(--ink-3)"' : '';
+    const delta = it.delta > 0 ? '+' + fmtInt(it.delta) : '—';
+    return '<tr class="' + (st === 'error' ? 'off' : '') + '">' +
+      '<td class="mark" aria-hidden="true"><i' + markStyle + '></i></td>' +
+      '<td>' + esc(it.nickname || (it.uid || '').slice(0, 8)) +
+        '<div class="note">' + esc(it.realm || '') + '</div></td>' +
+      '<td class="num">' + (showNum ? fmtInt(it.before) : '—') + '</td>' +
+      '<td class="num">' + (showNum ? fmtInt(it.after) : '—') + '</td>' +
+      '<td class="num">' + delta + '</td>' +
+      '<td>' + esc(compStatusText[st] || st) + (it.error ? ' · ' + esc(it.error) : '') + '</td></tr>';
+  }).join('');
+}
+async function claimCompensationAll() {
+  if (!(await ask('将对全部账号领取一次活动补偿；已领过或无可领的账号不会有新增。继续？', '领取'))) return;
+  const b = $('btnCompClaim');
+  b.disabled = true; b.textContent = '领取中…';
+  try {
+    const d = await api('compensation/claim', { method: 'POST' });
+    renderCompensation(d.accounts);
+    const parts = [];
+    if (d.claimed) parts.push(d.claimed + ' 个到账 +' + fmtInt(d.delta_total));
+    if (d.unchanged) parts.push(d.unchanged + ' 个无新增');
+    if (d.failed) parts.push(d.failed + ' 个失败');
+    if (d.skipped) parts.push(d.skipped + ' 个跳过');
+    toast('补偿领取完成：' + (parts.join('，') || '无变化'), d.failed ? 'err' : 'ok');
+    loadOverview(true); // 后端已刷新余额，账号池数字同步
+  } catch (e) {
+    toast('补偿领取失败：' + e.message, 'err');
+  } finally {
+    b.disabled = false; b.textContent = '一键领取（全部账号）';
+  }
+}
+if ($('btnCompClaim')) $('btnCompClaim').onclick = claimCompensationAll;
+
 /* ── 调用记录（逐请求明细流水）───────────────────────────────────── */
 /* 每行是一次账号尝试：谁、哪个模型、成没成、多少 token、命中多少缓存、
    扣了多少积分、耗时多久。服务端是纯内存环形缓冲（最近 N 条，重启即空）。 */

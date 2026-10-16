@@ -181,6 +181,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/activity_all", p.withAuth(p.activityAll))
 	p.mux.HandleFunc("POST /panel/api/keepalive_all", p.withAuth(p.keepaliveAll))
 	p.mux.HandleFunc("POST /panel/api/balance_all", p.withAuth(p.balanceAll))
+	p.mux.HandleFunc("POST /panel/api/compensation/claim", p.withAuth(p.compensationClaim))
 	p.mux.HandleFunc("GET /panel/api/packages", p.withAuth(p.packages))
 	p.mux.HandleFunc("GET /panel/api/usage", p.withAuth(p.usage))
 	p.mux.HandleFunc("GET /panel/api/calls", p.withAuth(p.callsHandler))

@@ -81,5 +81,6 @@
 | 成长任务队列排程挂载 | `internal/scheduler/scheduler.go`（`taskGrowth` / `GrowthHook`）、`internal/panel/taskcenter.go`（`RunGrowthQueueOnce`） |
 | 活跃自检回读 streak | `internal/scheduler/scheduler.go`（`checkActivityStreak`） |
 | streak 端点 `activity/growth/streak` | `internal/upstream/travel.go`（常量 / `GrowthStreak`） |
+| 活动补偿领取走 Web 域 `/billing/meter/claim-compensation`（官网 plans-usage 同款；响应无 data，到账以领取前后余额差为准；鉴权/404 降级旧 billing 域） | `internal/upstream/blackcat.go`（`ClaimCompensation` / `claimCompensationWeb`）；批量入口 `internal/panel/compensation.go` |
 | Redis 粘性镜像 7 天 TTL | `internal/redisstore/redisstore.go` |
 | 模型上下文 / 输出上限四级查找链 | `internal/upstream/context_catalog.go` · `internal/upstream/model.json` · `/v1/models` 组装在 `internal/server/handler.go` |

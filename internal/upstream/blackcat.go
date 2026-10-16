@@ -8,6 +8,7 @@ package upstream
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -81,17 +82,65 @@ func (c *Client) ClaimGift(a *auth.Auth) (int64, error) {
 	return resp.Credit, nil
 }
 
-// ClaimCompensation 领取活动补偿（有则领，无则业务错误）。
-func (c *Client) ClaimCompensation(a *auth.Auth) (int64, error) {
-	data, err := c.billingJSON(a, http.MethodPost, "/billing/meter/claim-compensation", map[string]any{})
+// ClaimCompensation 领取活动补偿（官方「用量管理」页同款形态）。
+//
+// 端点实测（2026-10，官网 https://www.workbuddy.cn/profile/plans-usage 的手动领取按钮抓包）：
+//
+//	POST <webBase>/billing/meter/claim-compensation    无 body
+//	头：x-client-platform: web，Origin/Referer 指 plans-usage
+//	响应：{"code":0,"msg":"OK"} —— **无 data 字段**，金额不透出，到账以领取前后余额差为准。
+//
+// 官方页面是 cookie 会话，本网关账号池只有 Bearer token——同域 ClaimReward 已验证
+// Bearer 可用，照其头形状。鉴权类（401/403）或路径不存在（404）时降级旧 billing
+// 域形态（claimCompensationBilling：billingBase + BillingHeaders，{} body）。
+// "已领取过 / 无可领补偿" 等业务拒绝以 code!=0 返回 *Error，由调用方按需展示。
+func (c *Client) ClaimCompensation(a *auth.Auth) error {
+	err := c.claimCompensationWeb(a)
+	if err == nil {
+		return nil
+	}
+	var ue *Error
+	if errors.As(err, &ue) && (ue.Kind == ErrNotFound ||
+		ue.Status == http.StatusUnauthorized || ue.Status == http.StatusForbidden) {
+		return c.claimCompensationBilling(a)
+	}
+	return err
+}
+
+// claimCompensationWeb 官方页面同款 Web 域形态（首选）。
+func (c *Client) claimCompensationWeb(a *auth.Auth) error {
+	base := c.webBase(a)
+	req, err := http.NewRequest(http.MethodPost, base+"/billing/meter/claim-compensation", nil)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	var resp struct {
-		Credit int64 `json:"credit"`
+	// 头形状 = plans-usage 抓包 + 同域 ClaimReward 的 Bearer/身份头先例。
+	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("x-client-platform", "web")
+	req.Header.Set("Origin", base)
+	req.Header.Set("Referer", base+"/profile/plans-usage")
+	if ua := c.userAgent(a); ua != "" {
+		req.Header.Set("User-Agent", ua)
 	}
-	_ = json.Unmarshal(data, &resp)
-	return resp.Credit, nil
+	if a.UID != "" {
+		req.Header.Set("X-User-Id", a.UID)
+	}
+	if a.EnterpriseID != "" {
+		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
+		req.Header.Set("X-Tenant-Id", a.EnterpriseID)
+	}
+	if d := a.DomainValue(); d != "" {
+		req.Header.Set("X-Domain", d)
+	}
+	_, err = c.doJSON(req)
+	return err
+}
+
+// claimCompensationBilling 旧 billing 域形态（降级路径）：billingBase + BillingHeaders。
+func (c *Client) claimCompensationBilling(a *auth.Auth) error {
+	_, err := c.billingJSON(a, http.MethodPost, "/billing/meter/claim-compensation", map[string]any{})
+	return err
 }
 
 // HeatmapYesterdayMissed 检查昨日是否漏签（heatmap cell score==0）。

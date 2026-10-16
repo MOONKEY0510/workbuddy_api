@@ -1068,6 +1068,29 @@ legend { font-size: 11.5px; letter-spacing: .05em; color: var(--ink-3); font-wei
 
     <!-- 用量 -->
     <section class="view" id="view-usage" hidden>
+      <div class="box" id="compBox">
+        <header>
+          <h3>积分补偿领取</h3>
+          <span class="grow"></span>
+          <span class="note" id="compNote">官方「用量管理」同款入口 · 领取后自动刷新余额</span>
+          <button class="xs primary" id="btnCompClaim">一键领取（全部账号）</button>
+        </header>
+        <div class="note-bar">补偿活动的资格与有效期以官方公告为准；已领过或无可领补偿的账号不会有新增，到账金额以领取前后的余额差为准。</div>
+        <div class="tbl-wrap" id="compWrap" hidden>
+          <table class="acc">
+            <thead><tr>
+              <th class="mark" aria-hidden="true"></th>
+              <th>账号</th>
+              <th class="num">领取前</th>
+              <th class="num">领取后</th>
+              <th class="num">差额</th>
+              <th>结果</th>
+            </tr></thead>
+            <tbody id="compBody"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="box">
         <header>
           <h3>用量总览</h3>
