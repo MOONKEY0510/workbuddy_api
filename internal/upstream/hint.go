@@ -66,6 +66,9 @@ func GatewayHint(kind ErrKind, msg string, ctx HintContext) string {
 		return "account credits exhausted at upstream; waiting for daily check-in to restore"
 	case ErrModelBlocked:
 		return "upstream has no such model on this backend; switch model or retry on another account"
+	case ErrQueueWait:
+		// 排队是全站队列，换号/换模型都排同一条队：唯一动作是按 Retry-After 等待重试。
+		return "upstream is queueing requests (not an account failure); retry after the indicated delay"
 	case ErrContentBlocked:
 		// 措辞不含 "upstream"：content_blocked 响应有不含上游字样的既有口径
 		// （handler_test 的泄漏守卫），hint 遵守同一口径。

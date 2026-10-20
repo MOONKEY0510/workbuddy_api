@@ -3,6 +3,7 @@
 package upstream
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -42,6 +43,9 @@ const (
 	ErrImageInvalid                  // 图片请求格式/数据无效 → 请求级错误：不罚号、不轮转，末端透传原文
 	ErrToolMismatch                  // 11148「tool calls and tool results do not match」→ 对话工具记录损坏（请求内容问题）：不罚号、不轮转，剥离工具历史自愈重试
 	ErrClient                        // 其他 4xx / 业务错误
+	// ErrQueueWait 上游全站排队（业务码 6020，见 queue.go）：与账号健康无关，
+	// 不罚账号（不喂熔断/连败、不冷却）、不轮转，透传 429 + Retry-After 给客户端。
+	ErrQueueWait
 )
 
 func (k ErrKind) String() string {
@@ -74,6 +78,8 @@ func (k ErrKind) String() string {
 		return "account_fault"
 	case ErrClient:
 		return "client"
+	case ErrQueueWait:
+		return "queue_wait"
 	default:
 		return "none"
 	}
@@ -510,6 +516,12 @@ func ParseRateReset(body string) (time.Time, bool) {
 //     连环 403。带业务信封的 403 已被上方各层捕获，走不到本层。
 //  11. 内容策略/参数错误/其他 4xx —— 通用兜底。
 func Classify(status int, body string) ErrKind {
+	// 排队等待（code 6020）必须最先判：外壳状态码不固定（实测 200/429/5xx 都可能），
+	// 语义上"与账号无关"。若放到状态码分支之后，5xx 外壳会被判 ErrServer →
+	// handler 喂 NoteError → 整个号池被排队熔断（本 bug 的根因）。
+	if IsQueueWait(body) {
+		return ErrQueueWait
+	}
 	// 11102「该后端无此模型」须最先判：它是「模型在后端不存在」的确定性答复，语义比
 	// 计费/限流都更具体——若不先判，msg 里的 "service info not found" 会被更宽的
 	// 4xx 兜底归为 ErrClient（只换号不避让），该坏号会留在池内反复被选中。
@@ -931,6 +943,14 @@ func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, fmt.Errorf("parse failed: %w (body: %s)", err, truncate(string(raw), 120))
 	}
+	// 排队等待（code 6020）：与账号无关的全站队列，单独分类并带上 body 里的
+	// 建议等待（data.retry_after）。必须在此先判——Classify 在 doJSON 只拿到
+	// env.Msg（看不到 code），落到下面通用分支会退化成 ErrClient 喂连败。
+	if IsQueueWait(string(raw)) {
+		q := ParseQueueWait(string(raw))
+		return nil, &Error{Kind: ErrQueueWait, Status: resp.StatusCode,
+			Msg: fmt.Sprintf("code=%d msg=%s", env.Code, truncate(env.Msg, 160)), RetryAfter: q.RetryAfter}
+	}
 	if env.Code != 0 {
 		kind := Classify(resp.StatusCode, env.Msg)
 		if kind == ErrNone {
@@ -1123,12 +1143,39 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 			if d, ok := ParseRetryAfter(resp.Header); ok {
 				ue.RetryAfter = d
 			}
+			// 排队响应把头形态之外的建议等待放在 body（data.retry_after）；
+			// 后写覆盖（body 是上游更具体的口径），供 handler 回 Retry-After。
+			if kind == ErrQueueWait {
+				if q := ParseQueueWait(string(raw)); q.RetryAfter > 0 {
+					ue.RetryAfter = q.RetryAfter
+				}
+			}
 			return nil, resp.StatusCode, raw, ue
+		}
+		// 排队等待也可能以 200 + JSON 信封（非 SSE）返回：首字节 '{' 说明这不是事件流，
+		// 预读一小段判定；命中排队按 429 语义返回（否则下游会把整段 JSON 当"空流"
+		// 记成 upstream_parse，客户端收到 502 假失败）。非排队 JSON 原样回放。
+		br := bufio.NewReader(resp.Body)
+		var head []byte
+		if b, perr := br.Peek(1); perr == nil && len(b) == 1 && b[0] == '{' {
+			head = readJSONHead(br)
+			if IsQueueWait(string(head)) {
+				resp.Body.Close()
+				cancel()
+				q := ParseQueueWait(string(head))
+				log.Printf("WARN: [upstream] chat_stream acct=%s: upstream queue wait (HTTP %d position=%d size=%s retry_after=%s)",
+					logfmt.Label(a.UID, a.Nickname), resp.StatusCode, q.Position, q.Size, q.RetryAfter)
+				return nil, http.StatusTooManyRequests, head, &Error{
+					Kind: ErrQueueWait, Status: http.StatusTooManyRequests,
+					Msg: truncate(string(head), 200), RetryAfter: q.RetryAfter,
+				}
+			}
 		}
 		// 成功分支：cancel 所有权交给 monitorBody（其 Close 会 cancel）；
 		// IdleTimeout<=0 时 monitorBody 原样返回底流、无人调 cancel——可接受：
 		// 取消传播由 http.Transport 在 body Close / 父 ctx 取消时处理，连接正常清理。
-		return monitorBody(resp.Body, c.IdleTimeout, cancel), resp.StatusCode, nil, nil
+		return monitorBody(multiReaderBody{io.MultiReader(bytes.NewReader(head), br), resp.Body},
+			c.IdleTimeout, cancel), resp.StatusCode, nil, nil
 	}
 	panic("unreachable: chatPaths is never empty") // for range 空集时编译器仍要求兜底 return；chatPaths 恒非空（构造保证），永不触达
 }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"sync"
@@ -888,6 +889,28 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 放在 kind 判定之后——分类是面板详情里最有价值的一列。
 			recordAttempt(acct.UID, pool.TokenUsageDelta{}, attemptStarted, 0, false,
 				&attemptFail{Status: status, Kind: kind.String(), Err: string(respBody)}, false)
+			// 上游排队等待（code 6020）：全站队列，与账号健康无关。**不轮转、不罚号**，
+			// 直接把排队信息透传给客户端（429 + Retry-After + 原文），让客户端按上游
+			// 建议的时间重试——排队时换任何号都在同一条队里，轮转只是重排一次队列。
+			// 修复点：此前 5xx 外壳归 ErrServer → NoteError → 号池逐个熔断。
+			if kind == upstream.ErrQueueWait {
+				h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel, uerr)
+				fail(acct.UID)
+				retry := uerr.RetryAfter
+				if retry <= 0 {
+					retry = upstream.ParseQueueWait(string(respBody)).RetryAfter
+				}
+				msg := string(respBody)
+				if strings.TrimSpace(msg) == "" {
+					msg = "upstream is queueing requests (code 6020)"
+				}
+				writeOpenAIErrorHintRetry(w, http.StatusTooManyRequests, "queue_wait", msg,
+					h.hintOf(upstream.ErrQueueWait, string(respBody), bareModel, reqHasImage, uerr), retry)
+				st.status = http.StatusTooManyRequests
+				log.Printf("WARN: [server] upstream queue wait acct=%s model=%s retry_after=%s",
+					logfmt.Label(acct.UID, acct.Nickname), bareModel, retry)
+				return
+			}
 			// 内容拦截误报（passthrough/append 模式首遇）：判定为 system 指纹误报，
 			// 触发降级到次日 00:00 CST，换 Degraded 中性提示词同请求内重试（append
 			// 降级重试同样退化为 replace——原文在场只会确定性再撞 400）。
@@ -1356,6 +1379,12 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		// （与 6004 同域），选号侧 healthyForModel 对该账号自动避开该模型。
 		// 立即换号（本轮 continue），该账号该模型冷却，下次选号避开。
 		h.cfg.Pool.BlockModelBackoff(uid, model, upstream.ModelBlockReason)
+	case upstream.ErrQueueWait:
+		// 上游全站排队（code 6020）：与账号健康无关——同一时刻换任何账号都在同一条
+		// 队里。**零动作**：不 NoteError（喂熔断）、不 NoteFailures（喂连败降权）、
+		// 不冷却。此前 5xx 外壳被 Classify 判成 ErrServer → NoteError → 号池逐个
+		// 熔断，正是「排队把号池打熔断」的根因。chatCompletions 已直接透传 429 +
+		// Retry-After 返回、不轮转，本分支只为状态机完备。
 	default:
 		// 其余（ErrClient/ErrNone）：只换号不罚（防雪崩），不喂熔断。
 		// ErrClient（未知 4xx）喂连败计数（issue #114）：连续 N 次该形态失败 →
@@ -1411,6 +1440,19 @@ func writeOpenAIErrorHint(w http.ResponseWriter, status int, code, msg, hint str
 			"gateway_hint": hint,
 		},
 	})
+}
+
+// writeOpenAIErrorHintRetry 同 writeOpenAIErrorHint，额外带 Retry-After 头
+// （秒，向上取整；retry<=0 时不带该头——不编造等待时间）。
+func writeOpenAIErrorHintRetry(w http.ResponseWriter, status int, code, msg, hint string, retry time.Duration) {
+	if retry > 0 {
+		sec := int64((retry + time.Second - 1) / time.Second)
+		if sec < 1 {
+			sec = 1
+		}
+		w.Header().Set("Retry-After", strconv.FormatInt(sec, 10))
+	}
+	writeOpenAIErrorHint(w, status, code, msg, hint)
 }
 
 // hasImagePart 报告聊天请求体是否携带多模态 image_url part（OpenAI 兼容形态

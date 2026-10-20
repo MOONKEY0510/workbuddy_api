@@ -1888,6 +1888,7 @@ const CALLS_KIND = {
   client: '客户端/业务错误', transport: '网络传输错误', upstream_parse: '上游响应解析失败',
   client_abort: '客户端中断（非账号问题）', upstream_truncated: '上游断流',
   upstream_error: '上游流内错误', tool_mismatch: '工具记录不匹配（需新建会话）',
+  queue_wait: '上游排队（非账号问题）',
 };
 const callsKindName = k => CALLS_KIND[k] || k || '未知';
 
