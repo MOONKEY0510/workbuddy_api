@@ -22,8 +22,13 @@ import (
 	"time"
 )
 
-// queueWaitCode 排队等待业务码（code 6020）。
-const queueWaitCode = "6020"
+// queueWaitCodes 上游排队类业务码（同一族的全站队列信号，语义一致）：
+//   - 6020 queue.waiting.title  排队等待（有位置，等就绪）
+//   - 6021 queue.full.title     队列已满（连位置都排不上，等队列消化）
+//
+// 两者都是**全站队列状态**，与账号健康无关；若只认 6020，6021 会落到 429 分支
+// 被判 ErrSoftRate → 账号级软冷却（实测把 18210236328 / 14770813034 直接停 10 分钟）。
+var queueWaitCodes = []string{"6020", "6021"}
 
 // queueWaitMaxRetry 采信的上游建议等待上限（超过视为脏数据，回落本地策略）。
 const queueWaitMaxRetry = 30 * time.Minute
@@ -35,9 +40,15 @@ const queueHeadLimit = 4096
 // queue_position 字段）。与状态码无关：外壳可能是 200、429 或 5xx。
 func IsQueueWait(body string) bool {
 	lower := strings.ToLower(body)
-	return codeMarker(lower, queueWaitCode) ||
-		strings.Contains(lower, "queue.waiting") ||
-		strings.Contains(lower, "queue_position")
+	for _, code := range queueWaitCodes {
+		if codeMarker(lower, code) {
+			return true
+		}
+	}
+	return strings.Contains(lower, "queue.waiting") ||
+		strings.Contains(lower, "queue.full") ||
+		strings.Contains(lower, "queue_position") ||
+		strings.Contains(lower, "queue_size")
 }
 
 // QueueWait 排队响应的重试信息（字段缺失即零值，不报错）。

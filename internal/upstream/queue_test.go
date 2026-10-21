@@ -23,6 +23,17 @@ func TestClassifyQueueWait(t *testing.T) {
 	}
 }
 
+// TestClassifyQueueFull 6021 queue.full（队列已满）与 6020 同属排队族：
+// 同样必须先于状态码分支判定——否则 429 外壳会落 ErrSoftRate，给账号挂软冷却。
+func TestClassifyQueueFull(t *testing.T) {
+	const body = `{"code":6021,"msg":"queue.full.title","requestId":"701745d665c901903b7f7766a3069e4f"}`
+	for _, status := range []int{200, 429, 503} {
+		if got := Classify(status, body); got != ErrQueueWait {
+			t.Errorf("Classify(%d)=%v want ErrQueueWait", status, got)
+		}
+	}
+}
+
 // TestParseQueueWait 解析建议等待 / 队列位置 / 队列长度；畸形输入返回零值。
 func TestParseQueueWait(t *testing.T) {
 	q := ParseQueueWait(queueWaitSample)
@@ -52,6 +63,8 @@ func TestQueueWaitDetection(t *testing.T) {
 		queueWaitSample,
 		`{"code": "6020", "msg": "queue.waiting.title"}`,
 		`{"msg":"queue waiting","data":{"queue_position":3}}`,
+		`{"code":6021,"msg":"queue.full.title"}`,
+		`{"code": "6021", "msg": "queue.full.title"}`,
 	}
 	for _, body := range cases {
 		if !IsQueueWait(body) {

@@ -77,6 +77,37 @@ func TestQueueWait200JSON(t *testing.T) {
 	}
 }
 
+// TestQueueFull429DoesNotCooldown 6021 queue.full（队列已满，HTTP 429）此前被判
+// ErrSoftRate → 账号级软冷却（线上实测把两个号停了 10 分钟）。本用例锁定：
+// 与 6020 同待遇——429 + Retry-After 透传、零惩罚。
+func TestQueueFull429DoesNotCooldown(t *testing.T) {
+	const body = `{"code":6021,"msg":"queue.full.title","requestId":"701745d665c901903b7f7766a3069e4f","data":{"queue_position":0,"queue_size":"999+","retry_after":40}}`
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		return 429, body, false
+	})
+	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
+	p.SetBreaker(1, time.Hour, time.Hour)
+	h := NewHandler(Config{Pool: p, Upstream: up, PromptMode: "passthrough"})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"kimi-k3-1","messages":[{"role":"user","content":"hi"}]}`)))
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("code=%d want 429 body=%s", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "40" {
+		t.Errorf("Retry-After=%q want 40", got)
+	}
+	if !strings.Contains(rec.Body.String(), "queue.full") {
+		t.Errorf("message should carry upstream original body: %s", rec.Body)
+	}
+	st, _ := p.Status("u1")
+	if st.Cooling || st.Disabled || st.BreakerFails != 0 || st.ErrTotal != 0 {
+		t.Fatalf("6021 队列已满不得冷却/罚号: %+v", st)
+	}
+}
+
 // TestQueueWaitSSEContentTypeNotPeeked 200 + text/event-stream（SSE）不做信封预读：
 // 即便 body 以 '{' 开头也不按排队处理——预读只针对非事件流响应，避免给流式请求
 // 增加首字节前的响应头时延（本次收紧的回归点）。
