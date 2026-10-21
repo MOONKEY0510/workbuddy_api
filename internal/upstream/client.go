@@ -1155,19 +1155,25 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 		// 排队等待也可能以 200 + JSON 信封（非 SSE）返回：首字节 '{' 说明这不是事件流，
 		// 预读一小段判定；命中排队按 429 语义返回（否则下游会把整段 JSON 当"空流"
 		// 记成 upstream_parse，客户端收到 502 假失败）。非排队 JSON 原样回放。
+		//
+		// **仅对非事件流响应预读**（Content-Type 不含 text/event-stream）：SSE 一律
+		// 原样交给 relay，绝不在上游首字节/首帧到达前多等一步——流式请求的响应头
+		// 时延保持不变（慢模型首帧本就慢，不叠加任何网关侧阻塞）。
 		br := bufio.NewReader(resp.Body)
 		var head []byte
-		if b, perr := br.Peek(1); perr == nil && len(b) == 1 && b[0] == '{' {
-			head = readJSONHead(br)
-			if IsQueueWait(string(head)) {
-				resp.Body.Close()
-				cancel()
-				q := ParseQueueWait(string(head))
-				log.Printf("WARN: [upstream] chat_stream acct=%s: upstream queue wait (HTTP %d position=%d size=%s retry_after=%s)",
-					logfmt.Label(a.UID, a.Nickname), resp.StatusCode, q.Position, q.Size, q.RetryAfter)
-				return nil, http.StatusTooManyRequests, head, &Error{
-					Kind: ErrQueueWait, Status: http.StatusTooManyRequests,
-					Msg: truncate(string(head), 200), RetryAfter: q.RetryAfter,
+		if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+			if b, perr := br.Peek(1); perr == nil && len(b) == 1 && b[0] == '{' {
+				head = readJSONHead(br)
+				if IsQueueWait(string(head)) {
+					resp.Body.Close()
+					cancel()
+					q := ParseQueueWait(string(head))
+					log.Printf("WARN: [upstream] chat_stream acct=%s: upstream queue wait (HTTP %d position=%d size=%s retry_after=%s)",
+						logfmt.Label(a.UID, a.Nickname), resp.StatusCode, q.Position, q.Size, q.RetryAfter)
+					return nil, http.StatusTooManyRequests, head, &Error{
+						Kind: ErrQueueWait, Status: http.StatusTooManyRequests,
+						Msg: truncate(string(head), 200), RetryAfter: q.RetryAfter,
+					}
 				}
 			}
 		}

@@ -77,6 +77,30 @@ func TestQueueWait200JSON(t *testing.T) {
 	}
 }
 
+// TestQueueWaitSSEContentTypeNotPeeked 200 + text/event-stream（SSE）不做信封预读：
+// 即便 body 以 '{' 开头也不按排队处理——预读只针对非事件流响应，避免给流式请求
+// 增加首字节前的响应头时延（本次收紧的回归点）。
+func TestQueueWaitSSEContentTypeNotPeeked(t *testing.T) {
+	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
+		return 200, queueWaitBody, true // isStream=true → Content-Type: text/event-stream
+	})
+	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
+	p.SetBreaker(1, time.Hour, time.Hour)
+	h := NewHandler(Config{Pool: p, Upstream: up, PromptMode: "passthrough"})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`)))
+
+	if rec.Code == http.StatusTooManyRequests {
+		t.Fatalf("SSE 响应不应走排队预读分支: body=%s", rec.Body)
+	}
+	st, _ := p.Status("u1")
+	if st.BreakerFails != 0 || st.Cooling {
+		t.Fatalf("空流不应罚号（既有语义）: %+v", st)
+	}
+}
+
 // TestServer5xxStillPenalizes 回归：普通 5xx（非排队）仍喂熔断——修复不能把
 // 真正的上游故障一起放生。
 func TestServer5xxStillPenalizes(t *testing.T) {
